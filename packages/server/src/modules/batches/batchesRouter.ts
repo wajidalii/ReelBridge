@@ -1,4 +1,12 @@
-import { getDb, postBatches, postItems, postTargets, publishTargets } from '@reelbridge/shared';
+import {
+  getDb,
+  mediaAssets,
+  postBatches,
+  postItems,
+  postTargets,
+  publishTargets,
+  type ValidationSeverity,
+} from '@reelbridge/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -10,6 +18,7 @@ import {
   ResourceNotFoundError,
 } from '../ownership/assertOwnership.js';
 import { requireOwnership } from '../ownership/middleware.js';
+import { PREVIEW_ADAPTERS_BY_PLATFORM } from './platformAdapters.js';
 
 export const batchesRouter = Router();
 
@@ -207,5 +216,150 @@ batchesRouter.post(
     }
 
     res.status(created.length > 0 ? 201 : 400).json({ created, rejected });
+  },
+);
+
+interface PreviewWarning {
+  code: string;
+  severity: ValidationSeverity;
+  affectedField: string;
+  message: string;
+}
+
+interface PreviewRow {
+  postItemId: string;
+  mediaAssetId: string;
+  originalFilename: string | null;
+  publishTargetId: string;
+  platform: string | null;
+  targetDisplayName: string | null;
+  resolvedCaption: string;
+  resolvedTitle: string | null;
+  scheduledAt: Date | null;
+  /** null when the target/adapter couldn't be resolved at all (see warnings). */
+  schedulingMode: 'native_scheduled' | 'awaiting_app_managed_publish' | null;
+  warnings: PreviewWarning[];
+  blocking: boolean;
+}
+
+// Dry-run: resolves every (media, target, time, caption) combination for a
+// batch with zero DB writes. Safe to call repeatedly while the batch is still
+// in draft — nothing here mutates state, so it's naturally idempotent.
+batchesRouter.get(
+  '/:id/preview',
+  requireAuth,
+  requireOwnership('id', assertBatchOwnership),
+  async (req, res) => {
+    const db = getDb();
+    const batchId = req.params.id as string;
+
+    const [batch] = await db.select().from(postBatches).where(eq(postBatches.id, batchId));
+    if (!batch) {
+      res.status(404).json({ error: 'Batch not found' });
+      return;
+    }
+
+    const items = await db.select().from(postItems).where(eq(postItems.batchId, batchId));
+    const itemIds = items.map((item) => item.id);
+    const targets =
+      itemIds.length > 0
+        ? await db.select().from(postTargets).where(inArray(postTargets.postItemId, itemIds))
+        : [];
+
+    const mediaAssetIds = [...new Set(items.map((item) => item.mediaAssetId))];
+    const mediaRows =
+      mediaAssetIds.length > 0
+        ? await db.select().from(mediaAssets).where(inArray(mediaAssets.id, mediaAssetIds))
+        : [];
+    const mediaById = new Map(mediaRows.map((media) => [media.id, media]));
+
+    const publishTargetIds = [...new Set(targets.map((target) => target.publishTargetId))];
+    const publishTargetRows =
+      publishTargetIds.length > 0
+        ? await db.select().from(publishTargets).where(inArray(publishTargets.id, publishTargetIds))
+        : [];
+    const publishTargetById = new Map(publishTargetRows.map((target) => [target.id, target]));
+
+    const rows: PreviewRow[] = [];
+
+    for (const item of items) {
+      const media = mediaById.get(item.mediaAssetId);
+      const itemTargets = targets.filter((target) => target.postItemId === item.id);
+
+      for (const target of itemTargets) {
+        const publishTarget = publishTargetById.get(target.publishTargetId);
+        const adapter = publishTarget
+          ? PREVIEW_ADAPTERS_BY_PLATFORM[publishTarget.platform]
+          : undefined;
+
+        const resolvedCaption = target.captionOverride ?? item.defaultCaption;
+        const resolvedTitle =
+          target.titleOverride ??
+          item.defaultTitle ??
+          (publishTarget?.platform === 'youtube_channel'
+            ? resolvedCaption.split('\n')[0]
+            : undefined);
+
+        const warnings: PreviewWarning[] = [];
+
+        if (!publishTarget) {
+          warnings.push({
+            code: 'target_not_found',
+            severity: 'blocking',
+            affectedField: 'target',
+            message: 'This target no longer exists.',
+          });
+        } else if (!publishTarget.isActive) {
+          warnings.push({
+            code: 'target_needs_reconnect',
+            severity: 'blocking',
+            affectedField: 'target',
+            message: 'This target needs to be reconnected before it can be scheduled.',
+          });
+        }
+
+        if (!media) {
+          warnings.push({
+            code: 'media_not_found',
+            severity: 'blocking',
+            affectedField: 'media',
+            message: 'The media asset for this item no longer exists.',
+          });
+        } else if (adapter) {
+          warnings.push(
+            ...adapter.validateMediaConstraints({
+              mediaAssetId: media.id,
+              storageKey: media.storageKey,
+              originalFilename: media.originalFilename,
+              fileSizeBytes: media.fileSizeBytes,
+              durationSeconds: media.durationSeconds ?? undefined,
+              width: media.width ?? undefined,
+              height: media.height ?? undefined,
+            }),
+          );
+        }
+
+        rows.push({
+          postItemId: item.id,
+          mediaAssetId: item.mediaAssetId,
+          originalFilename: media?.originalFilename ?? null,
+          publishTargetId: target.publishTargetId,
+          platform: publishTarget?.platform ?? null,
+          targetDisplayName: publishTarget?.displayName ?? null,
+          resolvedCaption,
+          resolvedTitle: resolvedTitle ?? null,
+          scheduledAt: target.scheduledAt,
+          schedulingMode: adapter
+            ? adapter.capabilities.nativeScheduling
+              ? 'native_scheduled'
+              : 'awaiting_app_managed_publish'
+            : null,
+          warnings,
+          blocking: warnings.some((warning) => warning.severity === 'blocking'),
+        });
+      }
+    }
+
+    res.json({ batchId, batchName: batch.name, rows });
   },
 );
