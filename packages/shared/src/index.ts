@@ -12,3 +12,4 @@ export * from './queues/keys.js';
 export * from './queues/registry.js';
 export * from './queues/publishToTarget.js';
 export * from './queues/pollStatus.js';
+export * from './queues/healthCheck.js';

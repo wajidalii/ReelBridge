@@ -5,6 +5,7 @@ import { authRouter } from './modules/auth/router.js';
 import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
 import { facebookTargetsRouter } from './modules/connections/facebookTargetsRouter.js';
 import { ownershipErrorHandler } from './modules/ownership/middleware.js';
+import { targetsRouter } from './modules/targets/targetsRouter.js';
 
 export function createApp() {
   const app = express();
@@ -22,6 +23,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/connections/facebook', facebookConnectionsRouter);
   app.use('/api/targets/facebook', facebookTargetsRouter);
+  app.use('/api/targets', targetsRouter);
 
   app.use(ownershipErrorHandler);
 
