@@ -3,6 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import { authRouter } from './modules/auth/router.js';
 import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
+import { facebookTargetsRouter } from './modules/connections/facebookTargetsRouter.js';
 import { ownershipErrorHandler } from './modules/ownership/middleware.js';
 
 export function createApp() {
@@ -20,6 +21,7 @@ export function createApp() {
 
   app.use('/api/auth', authRouter);
   app.use('/api/connections/facebook', facebookConnectionsRouter);
+  app.use('/api/targets/facebook', facebookTargetsRouter);
 
   app.use(ownershipErrorHandler);
 
