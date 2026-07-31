@@ -13,3 +13,4 @@ export * from './queues/registry.js';
 export * from './queues/publishToTarget.js';
 export * from './queues/pollStatus.js';
 export * from './queues/healthCheck.js';
+export * from './scheduling/slotGeneration.js';
