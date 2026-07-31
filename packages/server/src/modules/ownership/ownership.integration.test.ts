@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { like } from 'drizzle-orm';
+import { inArray, like } from 'drizzle-orm';
 import express from 'express';
 import { Client } from 'pg';
 import request from 'supertest';
@@ -109,11 +109,51 @@ async function createResourceSetForUser(db: Database, email: string) {
   return { user, target, media, batch, item, postTarget };
 }
 
+/**
+ * post_items.media_asset_id is deliberately ON DELETE RESTRICT (protects
+ * against deleting media that's referenced by a post), so a plain
+ * `delete from users` cascade fails with a FK violation once it reaches
+ * media_assets while post_items still reference them. Delete in dependency
+ * order instead: post_targets -> post_items -> {media_assets, publish_targets,
+ * post_batches, platform_connections} -> users.
+ */
+async function cleanupTestData(db: Database, emailPrefix: string): Promise<void> {
+  const testUsers = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(like(users.email, `${emailPrefix}%`));
+  const userIds = testUsers.map((u) => u.id);
+  if (userIds.length === 0) return;
+
+  const testBatches = await db
+    .select({ id: postBatches.id })
+    .from(postBatches)
+    .where(inArray(postBatches.userId, userIds));
+  const batchIds = testBatches.map((b) => b.id);
+
+  if (batchIds.length > 0) {
+    const testItems = await db
+      .select({ id: postItems.id })
+      .from(postItems)
+      .where(inArray(postItems.batchId, batchIds));
+    const itemIds = testItems.map((i) => i.id);
+
+    if (itemIds.length > 0) {
+      await db.delete(postTargets).where(inArray(postTargets.postItemId, itemIds));
+      await db.delete(postItems).where(inArray(postItems.id, itemIds));
+    }
+    await db.delete(postBatches).where(inArray(postBatches.id, batchIds));
+  }
+
+  await db.delete(mediaAssets).where(inArray(mediaAssets.userId, userIds));
+  await db.delete(publishTargets).where(inArray(publishTargets.userId, userIds));
+  await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
+  await db.delete(users).where(inArray(users.id, userIds));
+}
+
 describe.skipIf(!dbReachable)('multi-tenant isolation via assert*Ownership', () => {
   afterAll(async () => {
-    await getDb()
-      .delete(users)
-      .where(like(users.email, `${TEST_EMAIL_PREFIX}%`));
+    await cleanupTestData(getDb(), TEST_EMAIL_PREFIX);
     await getPool().end();
   });
 
