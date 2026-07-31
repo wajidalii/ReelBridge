@@ -1,6 +1,8 @@
 import { useMutation } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { apiPost } from '../api/client.js';
+import { useConfig } from '../api/useConfig.js';
 
 interface ManualTargetResponse {
   id: string;
@@ -13,9 +15,24 @@ const inputClasses =
   'placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30';
 
 export function ConnectFacebook() {
+  const [searchParams] = useSearchParams();
   const [pageId, setPageId] = useState('');
   const [name, setName] = useState('');
   const [accessToken, setAccessToken] = useState('');
+  const { data: config, isLoading: configLoading } = useConfig();
+  const metaApproved = config?.metaAppReviewApproved === true;
+
+  // The initiating click sets ?intent=..., which the OAuth provider does not
+  // preserve across the redirect round-trip — the server re-derives it from
+  // the signed OAuth state and echoes it back on both success and (where
+  // known) error redirects, so this one param covers both cases.
+  const intent = searchParams.get('intent') === 'instagram' ? 'instagram' : 'facebook';
+  const connected = searchParams.get('connected') === '1';
+  const oauthError = searchParams.get('error');
+  const pagesFound = Number(searchParams.get('pages') ?? '0');
+  const instagramFound = Number(searchParams.get('instagram') ?? '0');
+  const noInstagramAccountFound = connected && intent === 'instagram' && instagramFound === 0;
+  const noPagesFound = connected && intent === 'facebook' && pagesFound === 0;
 
   const manualConnect = useMutation({
     mutationFn: () =>
@@ -33,24 +50,111 @@ export function ConnectFacebook() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Connect Facebook</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+        {intent === 'instagram' ? 'Connect Instagram' : 'Connect Facebook'}
+      </h1>
       <p className="mt-2 text-slate-600">
-        Connect a Facebook Page (and any linked Instagram Business account) to start scheduling
-        Reels.
+        {intent === 'instagram'
+          ? "Connect the Facebook Page linked to your Instagram Business account — we'll find the Instagram account automatically."
+          : 'Connect a Facebook Page (and any linked Instagram Business account) to start scheduling Reels.'}
       </p>
 
-      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <button
-          type="button"
-          onClick={() => (window.location.href = '/api/connections/facebook/start')}
-          className="inline-flex items-center rounded-lg bg-[#1877f2] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1364d6]"
-        >
-          Connect with Facebook
-        </button>
-      </div>
+      {oauthError && (
+        <p role="alert" className="mt-4 text-sm font-medium text-red-600">
+          {oauthError}
+        </p>
+      )}
 
-      {/* Always shown, not just when auto-discovery comes back empty — Pages under a
-          Business Portfolio can be under-reported by /me/accounts (SAAS_PLAN.md). */}
+      {connected && !noInstagramAccountFound && !noPagesFound && (
+        <p role="status" className="mt-4 text-sm font-medium text-emerald-600">
+          {intent === 'instagram'
+            ? 'Instagram Business account connected.'
+            : `Connected ${pagesFound} Facebook Page${pagesFound === 1 ? '' : 's'}.`}
+        </p>
+      )}
+
+      {noPagesFound && (
+        <p role="status" className="mt-4 text-sm font-medium text-amber-700">
+          No Pages were auto-detected. This can happen for Pages under a Business Portfolio —
+          use manual entry below.
+        </p>
+      )}
+
+      {noInstagramAccountFound && (
+        <div role="status" className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <p className="text-sm font-medium text-amber-900">
+            {pagesFound > 0
+              ? "This Facebook Page isn't linked to an Instagram Business account yet."
+              : 'No Facebook Page was found to check for a linked Instagram Business account.'}
+          </p>
+          <p className="mt-2 text-sm text-amber-800">
+            Convert the Instagram account you want to use into a professional (Business)
+            account and link it to this Facebook Page, then reconnect.{' '}
+            <a
+              href="https://www.facebook.com/business/help/"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-medium underline"
+            >
+              See Meta&apos;s instructions
+            </a>
+            .
+          </p>
+        </div>
+      )}
+
+      {intent === 'facebook' && (
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          {!configLoading && !metaApproved ? (
+            <p className="text-sm font-medium text-amber-700">
+              Connecting with Facebook is currently invite-only while we complete Meta&apos;s App
+              Review. Use manual entry below in the meantime.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => (window.location.href = '/api/connections/facebook/start?intent=facebook')}
+              className="inline-flex items-center rounded-lg bg-[#1877f2] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1364d6]"
+            >
+              Connect with Facebook
+            </button>
+          )}
+        </div>
+      )}
+
+      {intent === 'instagram' && (
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          {!configLoading && !metaApproved ? (
+            <p className="text-sm font-medium text-amber-700">
+              Connecting Instagram is currently invite-only while we complete Meta&apos;s App
+              Review. Check back once that clears.
+            </p>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  (window.location.href = '/api/connections/facebook/start?intent=instagram')
+                }
+                className="inline-flex items-center rounded-lg bg-[#1877f2] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1364d6]"
+              >
+                Connect with Facebook
+              </button>
+              <p className="mt-3 text-sm text-slate-500">
+                Instagram doesn&apos;t yet support manual connection — use the button above and
+                we&apos;ll automatically detect any Instagram Business account linked to the Page
+                you choose.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Always shown for the Facebook intent, not just when auto-discovery comes back
+          empty — Pages under a Business Portfolio can be under-reported by /me/accounts
+          (SAAS_PLAN.md). Instagram has no manual-entry equivalent, so this section is
+          Facebook-only. */}
+      {intent === 'facebook' && (
       <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-base font-semibold text-slate-900">Or connect a Page manually</h2>
 
@@ -176,6 +280,7 @@ export function ConnectFacebook() {
           </ol>
         </details>
       </div>
+      )}
     </div>
   );
 }
