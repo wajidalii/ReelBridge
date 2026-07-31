@@ -161,6 +161,8 @@ describe.skipIf(!dbReachable)('batches API', () => {
     expect(getRes.body.items).toHaveLength(1);
     expect(getRes.body.items[0].targets).toHaveLength(1);
     expect(getRes.body.items[0].targets[0].captionOverride).toBeNull();
+    expect(getRes.body.items[0].media.id).toBe(media.id);
+    expect(getRes.body.items[0].media.originalFilename).toBe('clip.mp4');
 
     const db = getDb();
     const [row] = await db
@@ -260,6 +262,69 @@ describe.skipIf(!dbReachable)('batches API', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.rejected[0].error).toMatch(/title/i);
+  });
+
+  it('POST /:id/auto-distribute computes scheduled_at per item without writing anything', async () => {
+    const { user, target } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}autodist-${Date.now()}@example.com`,
+    );
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', cookie)
+      .send({ name: 'Auto-distribute batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemIds = [
+      '11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222',
+    ];
+    const res = await request(app)
+      .post(`/api/batches/${batchId}/auto-distribute`)
+      .set('Cookie', cookie)
+      .send({ publish_target_id: target.id, item_ids: itemIds, daily_slot_times: ['09:00'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.assignments).toHaveLength(2);
+    expect(res.body.assignments[0].item_id).toBe(itemIds[0]);
+    expect(res.body.assignments[1].item_id).toBe(itemIds[1]);
+    expect(new Date(res.body.assignments[0].scheduled_at).getTime()).toBeLessThan(
+      new Date(res.body.assignments[1].scheduled_at).getTime(),
+    );
+
+    // Dry-run: no post_items exist yet for these ids (they're arbitrary here),
+    // and none get created as a side effect of calling this endpoint.
+    const db = getDb();
+    const rows = await db.select().from(postItems).where(inArray(postItems.id, itemIds));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('POST /:id/auto-distribute is 404 for a target belonging to another user', async () => {
+    const { user: owner } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}autodist-owner-${Date.now()}@example.com`,
+    );
+    const { target: otherTarget } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}autodist-other-${Date.now()}@example.com`,
+    );
+    const ownerCookie = `reelbridge_access_token=${signAccessToken(owner.id)}`;
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', ownerCookie)
+      .send({ name: 'Auto-distribute batch 2' });
+    const batchId = batchRes.body.id as string;
+
+    const res = await request(app)
+      .post(`/api/batches/${batchId}/auto-distribute`)
+      .set('Cookie', ownerCookie)
+      .send({
+        publish_target_id: otherTarget.id,
+        item_ids: ['11111111-1111-1111-1111-111111111111'],
+        daily_slot_times: ['09:00'],
+      });
+
+    expect(res.status).toBe(404);
   });
 
   it('is 404 for a batch belonging to another user', async () => {

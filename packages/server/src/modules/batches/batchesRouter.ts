@@ -1,6 +1,8 @@
 import {
+  generateSchedulingSlots,
   getDb,
   mediaAssets,
+  PLATFORM_CAPABILITIES,
   postBatches,
   postItems,
   postTargets,
@@ -60,10 +62,20 @@ batchesRouter.get(
         ? await db.select().from(postTargets).where(inArray(postTargets.postItemId, itemIds))
         : [];
 
+    // Joined in so the target-assignment UI (#24) can show each item's
+    // filename/thumbnail-relevant metadata without an extra request per item.
+    const mediaAssetIds = [...new Set(items.map((item) => item.mediaAssetId))];
+    const mediaRows =
+      mediaAssetIds.length > 0
+        ? await db.select().from(mediaAssets).where(inArray(mediaAssets.id, mediaAssetIds))
+        : [];
+    const mediaById = new Map(mediaRows.map((media) => [media.id, media]));
+
     res.json({
       ...batch,
       items: items.map((item) => ({
         ...item,
+        media: mediaById.get(item.mediaAssetId) ?? null,
         targets: targets.filter((target) => target.postItemId === item.id),
       })),
     });
@@ -254,6 +266,69 @@ batchesRouter.post(
     }
 
     res.status(created.length > 0 ? 201 : 400).json({ created, rejected });
+  },
+);
+
+const autoDistributeSchema = z.object({
+  publish_target_id: z.string().uuid(),
+  item_ids: z.array(z.string().uuid()).min(1),
+  daily_slot_times: z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1),
+});
+
+// Dry-run, like /preview below: computes where each item *would* land if the
+// user auto-distributes, without writing anything — the client still submits
+// the resulting scheduled_at per item via POST .../targets to actually save
+// it, same as an explicit-datetime assignment would. `:id` here is only an
+// authorization boundary (requireOwnership below), not a data relationship —
+// item_ids are never looked up against this (or any) batch, since the
+// response is pure arithmetic over their count and never touches their
+// content.
+batchesRouter.post(
+  '/:id/auto-distribute',
+  requireAuth,
+  requireOwnership('id', assertBatchOwnership),
+  async (req, res) => {
+    const parsed = autoDistributeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: 'publish_target_id, item_ids, and daily_slot_times (HH:mm) are required',
+      });
+      return;
+    }
+
+    try {
+      await assertTargetOwnership(req.userId!, parsed.data.publish_target_id);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundError) {
+        res.status(404).json({ error: 'Target not found' });
+        return;
+      }
+      throw error;
+    }
+
+    const [target] = await getDb()
+      .select()
+      .from(publishTargets)
+      .where(eq(publishTargets.id, parsed.data.publish_target_id));
+    if (!target) {
+      res.status(404).json({ error: 'Target not found' });
+      return;
+    }
+
+    const capabilities = PLATFORM_CAPABILITIES[target.platform];
+    const { scheduledTimes, leftoverCount } = generateSchedulingSlots({
+      pendingItemCount: parsed.data.item_ids.length,
+      dailySlotTimes: parsed.data.daily_slot_times,
+      timezone: target.timezone ?? 'UTC',
+      minLeadMinutes: capabilities.minScheduleLeadMinutes,
+      maxLeadDays: capabilities.maxScheduleLeadDays,
+    });
+
+    const assignments = parsed.data.item_ids
+      .slice(0, scheduledTimes.length)
+      .map((itemId, index) => ({ item_id: itemId, scheduled_at: scheduledTimes[index] }));
+
+    res.json({ assignments, leftoverCount });
   },
 );
 
