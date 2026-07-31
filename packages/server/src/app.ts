@@ -7,6 +7,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { authRouter } from './modules/auth/router.js';
+import { batchesRouter } from './modules/batches/batchesRouter.js';
 import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
 import { facebookTargetsRouter } from './modules/connections/facebookTargetsRouter.js';
 import { mediaRouter } from './modules/media/mediaRouter.js';
@@ -31,6 +32,7 @@ export function createApp() {
   app.use('/api/targets/facebook', facebookTargetsRouter);
   app.use('/api/targets', targetsRouter);
   app.use('/api/media', mediaRouter);
+  app.use('/api/batches', batchesRouter);
 
   app.use(ownershipErrorHandler);
 
