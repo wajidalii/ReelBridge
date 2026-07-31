@@ -81,9 +81,21 @@ export interface StatusResult {
   errorMessage?: string;
 }
 
+/**
+ * 'blocking': the platform will actively reject this (e.g. duration outside
+ * the accepted range) — the UI must prevent scheduling until resolved.
+ * 'warning': non-ideal but the platform will still accept it (e.g. aspect
+ * ratio, which most platforms crop/pad rather than reject).
+ */
+export type ValidationSeverity = 'blocking' | 'warning';
+
+export type ValidationAffectedField = 'duration' | 'aspectRatio' | 'resolution' | 'fileSize';
+
 export interface ValidationWarning {
   code: string;
+  severity: ValidationSeverity;
   message: string;
+  affectedField: ValidationAffectedField;
 }
 
 export interface PlatformAdapter {

@@ -143,18 +143,24 @@ export const facebookPageAdapter: PlatformAdapter = {
   validateMediaConstraints(mediaAsset: MediaAssetRef): ValidationWarning[] {
     const warnings: ValidationWarning[] = [];
 
+    // Facebook Reels: 4-90 seconds (Meta's documented range as of this
+    // writing — re-verify against live docs at real-usage time).
     if (
       mediaAsset.durationSeconds !== undefined &&
       (mediaAsset.durationSeconds < 4 || mediaAsset.durationSeconds > 90)
     ) {
       warnings.push({
         code: 'duration_out_of_range',
+        severity: 'blocking',
+        affectedField: 'duration',
         message: `Facebook Reels must be 4-90 seconds; this video is ${mediaAsset.durationSeconds}s.`,
       });
     }
     if (mediaAsset.width && mediaAsset.height && mediaAsset.width > mediaAsset.height) {
       warnings.push({
         code: 'non_vertical_aspect_ratio',
+        severity: 'warning',
+        affectedField: 'aspectRatio',
         message: 'Facebook Reels are recommended to be vertical (9:16); this video is landscape.',
       });
     }
