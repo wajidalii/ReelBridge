@@ -34,3 +34,14 @@ Each package has its own `build`/`typecheck` script, runnable from the root via
 `npm run <script> --workspaces --if-present`, or scoped to one package with
 `npm run <script> --workspace=@reelbridge/<name>`.
 
+### Local dev stack
+
+```bash
+cp .env.example .env   # fill in ENCRYPTION_KEY / JWT_SECRET at minimum, see comments in the file
+docker compose up
+```
+
+This brings up Postgres, Redis, MinIO (S3-compatible, dev-only — auto-creates the
+`reelbridge-media` bucket), the API (auto-runs migrations on start), and the worker. The
+MinIO console is at http://localhost:9001, the API at http://localhost:4000.
+
