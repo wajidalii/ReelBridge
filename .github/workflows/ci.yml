@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  DATABASE_URL: postgres://reelbridge:reelbridge@localhost:5432/reelbridge
+  REDIS_URL: redis://localhost:6379
+  JWT_SECRET: ci-only-jwt-secret-not-used-anywhere-else
+  # CI-only test key (AES-256-GCM, base64), never used outside this workflow.
+  ENCRYPTION_KEY: l7h1fhRbl+M+3zH5zb+r7GdNaEDefpRIrBBXA7DB1NQ=
+  NODE_ENV: test
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: reelbridge
+          POSTGRES_PASSWORD: reelbridge
+          POSTGRES_DB: reelbridge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reelbridge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm run db:migrate --workspace=@reelbridge/server
+
+      - run: npm test
