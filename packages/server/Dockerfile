@@ -1,6 +1,9 @@
 FROM node:20-alpine AS dev
 WORKDIR /app
 
+# ffprobe/ffmpeg: used to extract duration/width/height from uploaded media (#17).
+RUN apk add --no-cache ffmpeg
+
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/platforms/facebook/package.json packages/platforms/facebook/package.json
