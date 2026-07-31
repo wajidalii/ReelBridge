@@ -141,6 +141,28 @@ describe.skipIf(!ready)('media upload API', () => {
     expect(row?.fileSizeBytes).toBeGreaterThan(0);
   });
 
+  it('echoes back client-supplied client_ids so results can be correlated by id, not just filename', async () => {
+    const user = await createTestUser(`${TEST_EMAIL_PREFIX}clientid-${Date.now()}@example.com`);
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const res = await request(app)
+      .post('/api/media')
+      .set('Cookie', cookie)
+      .attach('files', TEST_VIDEO_PATH)
+      .attach('files', TEST_VIDEO_PATH)
+      .field('client_ids', 'row-a')
+      .field('client_ids', 'row-b');
+
+    expect(res.status).toBe(201);
+    expect(res.body.created).toHaveLength(2);
+    // Both files share the same originalFilename — client_ids, not filename,
+    // is what a caller must use to tell the two rows apart.
+    const clientIds = res.body.created
+      .map((c: { clientId: string }) => c.clientId)
+      .sort((a: string, b: string) => a.localeCompare(b));
+    expect(clientIds).toEqual(['row-a', 'row-b']);
+  });
+
   it('rejects a non-mp4 file per-file without failing the rest of the batch', async () => {
     const user = await createTestUser(`${TEST_EMAIL_PREFIX}mixed-${Date.now()}@example.com`);
     const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
@@ -194,6 +216,39 @@ describe.skipIf(!ready)('media upload API', () => {
     const db = getDb();
     const [row] = await db.select().from(mediaAssets).where(eq(mediaAssets.id, mediaId));
     expect(row).toBeUndefined();
+  });
+
+  it('GET /:id/constraints reports per-platform warnings independent of any target assignment', async () => {
+    const user = await createTestUser(`${TEST_EMAIL_PREFIX}constraints-${Date.now()}@example.com`);
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const uploadRes = await request(app)
+      .post('/api/media')
+      .set('Cookie', cookie)
+      .attach('files', TEST_VIDEO_PATH);
+    const mediaId = uploadRes.body.created[0].id as string;
+
+    const res = await request(app)
+      .get(`/api/media/${mediaId}/constraints`)
+      .set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body.mediaAssetId).toBe(mediaId);
+    // The fixture is short and landscape, so every platform should flag it —
+    // this confirms warnings are computed straight from the media's own
+    // properties, with no post_targets row involved at all.
+    for (const platform of ['facebook_page', 'instagram_business', 'youtube_channel']) {
+      expect(res.body.warningsByPlatform[platform].length).toBeGreaterThan(0);
+    }
+
+    const otherUser = await createTestUser(
+      `${TEST_EMAIL_PREFIX}constraints-other-${Date.now()}@example.com`,
+    );
+    const otherCookie = `reelbridge_access_token=${signAccessToken(otherUser.id)}`;
+    const forbidden = await request(app)
+      .get(`/api/media/${mediaId}/constraints`)
+      .set('Cookie', otherCookie);
+    expect(forbidden.status).toBe(404);
   });
 
   it('returns 409 rather than crashing when deleting media referenced by a post item', async () => {

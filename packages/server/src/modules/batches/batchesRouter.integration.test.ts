@@ -281,4 +281,72 @@ describe.skipIf(!dbReachable)('batches API', () => {
     const res = await request(app).get(`/api/batches/${batchId}`).set('Cookie', otherCookie);
     expect(res.status).toBe(404);
   });
+
+  it('DELETE /:id/items/:itemId removes the item and unblocks deleting its media asset', async () => {
+    const { user, media } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}delete-item-${Date.now()}@example.com`,
+    );
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', cookie)
+      .send({ name: 'Delete-item batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemRes = await request(app)
+      .post(`/api/batches/${batchId}/items`)
+      .set('Cookie', cookie)
+      .send({ media_asset_id: media.id, default_caption: 'caption' });
+    const itemId = itemRes.body.id as string;
+
+    const db = getDb();
+    // The FK from post_items to media_assets is ON DELETE RESTRICT, so this
+    // must fail while the item still exists — proving the delete-item route
+    // below is actually necessary, not redundant with deleting the media
+    // directly. Checked at the DB layer (not via DELETE /api/media/:id) so
+    // this test doesn't depend on storage being configured, unlike the media
+    // module's own tests.
+    await expect(db.delete(mediaAssets).where(eq(mediaAssets.id, media.id))).rejects.toThrow();
+
+    const deleteRes = await request(app)
+      .delete(`/api/batches/${batchId}/items/${itemId}`)
+      .set('Cookie', cookie);
+    expect(deleteRes.status).toBe(204);
+
+    const [row] = await db.select().from(postItems).where(eq(postItems.id, itemId));
+    expect(row).toBeUndefined();
+
+    await expect(
+      db.delete(mediaAssets).where(eq(mediaAssets.id, media.id)),
+    ).resolves.not.toThrow();
+  });
+
+  it('DELETE /:id/items/:itemId is 404 for another user\'s item', async () => {
+    const { user: owner, media } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}delete-item-owner-${Date.now()}@example.com`,
+    );
+    const { user: other } = await createUserWithMediaAndTarget(
+      `${TEST_EMAIL_PREFIX}delete-item-other-${Date.now()}@example.com`,
+    );
+    const ownerCookie = `reelbridge_access_token=${signAccessToken(owner.id)}`;
+    const otherCookie = `reelbridge_access_token=${signAccessToken(other.id)}`;
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', ownerCookie)
+      .send({ name: 'Owner-only batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemRes = await request(app)
+      .post(`/api/batches/${batchId}/items`)
+      .set('Cookie', ownerCookie)
+      .send({ media_asset_id: media.id, default_caption: 'caption' });
+    const itemId = itemRes.body.id as string;
+
+    const res = await request(app)
+      .delete(`/api/batches/${batchId}/items/${itemId}`)
+      .set('Cookie', otherCookie);
+    expect(res.status).toBe(404);
+  });
 });

@@ -6,11 +6,13 @@ import {
   createStorageAdapterFromEnv,
   getDb,
   mediaAssets,
+  type ValidationWarning,
 } from '@reelbridge/shared';
 import { eq } from 'drizzle-orm';
 import { Router } from 'express';
 import multer from 'multer';
 import { requireAuth } from '../auth/middleware.js';
+import { PREVIEW_ADAPTERS_BY_PLATFORM } from '../batches/platformAdapters.js';
 import { assertMediaAssetOwnership } from '../ownership/assertOwnership.js';
 import { requireOwnership } from '../ownership/middleware.js';
 import { probeVideoMetadata, type VideoMetadata } from './ffprobe.js';
@@ -36,11 +38,28 @@ interface CreatedMedia {
   durationSeconds?: number;
   width?: number;
   height?: number;
+  clientId?: string;
 }
 
 interface FailedUpload {
   originalFilename: string;
   error: string;
+  clientId?: string;
+}
+
+/**
+ * A client may attach multiple files with the same originalFilename in one
+ * request — correlating the response back to UI rows by filename alone is
+ * ambiguous if some of those duplicates succeed and others fail. An optional
+ * `client_ids` field (one value per `files` entry, same order) lets a caller
+ * correlate exactly instead; both multer's `req.files` and busboy's parsed
+ * `req.body.client_ids` preserve the order fields appeared in the multipart
+ * stream, so index-matching the two is safe as long as the caller sends them
+ * in matching pairs.
+ */
+function normalizeToStringArray(value: unknown): string[] {
+  if (value === undefined) return [];
+  return (Array.isArray(value) ? value : [value]).map(String);
 }
 
 mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
@@ -49,22 +68,29 @@ mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
     res.status(400).json({ error: 'No files uploaded (expected multipart field "files")' });
     return;
   }
+  const clientIds = normalizeToStringArray((req.body as Record<string, unknown>).client_ids);
 
   const storage = createStorageAdapterFromEnv();
   const db = getDb();
   const created: CreatedMedia[] = [];
   const failed: FailedUpload[] = [];
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
+    const clientId = clientIds[index];
     try {
       if (!file.originalname.toLowerCase().endsWith('.mp4')) {
-        failed.push({ originalFilename: file.originalname, error: 'Only .mp4 files are accepted' });
+        failed.push({
+          originalFilename: file.originalname,
+          error: 'Only .mp4 files are accepted',
+          clientId,
+        });
         continue;
       }
       if (file.size > MAX_FILE_SIZE_BYTES) {
         failed.push({
           originalFilename: file.originalname,
           error: `File exceeds the ${MAX_FILE_SIZE_BYTES} byte size limit`,
+          clientId,
         });
         continue;
       }
@@ -97,12 +123,14 @@ mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
           durationSeconds: inserted.durationSeconds ?? undefined,
           width: inserted.width ?? undefined,
           height: inserted.height ?? undefined,
+          clientId,
         });
       }
     } catch (error) {
       failed.push({
         originalFilename: file.originalname,
         error: error instanceof Error ? error.message : 'Upload failed',
+        clientId,
       });
     } finally {
       await fs.promises.unlink(file.path).catch(() => {});
@@ -128,6 +156,47 @@ mediaRouter.get(
       return;
     }
     res.json(asset);
+  },
+);
+
+// Lets the batch upload UI show per-platform constraint warnings on a video
+// as soon as it's uploaded (design.md §4), before the user has assigned any
+// targets — unlike the batch preview endpoint (#20), which only produces
+// warnings for (item, target) pairs that already exist.
+mediaRouter.get(
+  '/:id/constraints',
+  requireAuth,
+  requireOwnership('id', assertMediaAssetOwnership),
+  async (req, res) => {
+    const db = getDb();
+    const [asset] = await db
+      .select()
+      .from(mediaAssets)
+      .where(eq(mediaAssets.id, req.params.id as string));
+
+    if (!asset) {
+      res.status(404).json({ error: 'Media asset not found' });
+      return;
+    }
+
+    const mediaRef = {
+      mediaAssetId: asset.id,
+      storageKey: asset.storageKey,
+      originalFilename: asset.originalFilename,
+      fileSizeBytes: asset.fileSizeBytes,
+      durationSeconds: asset.durationSeconds ?? undefined,
+      width: asset.width ?? undefined,
+      height: asset.height ?? undefined,
+    };
+
+    const warningsByPlatform: Record<string, ValidationWarning[]> = {};
+    for (const [platform, adapter] of Object.entries(PREVIEW_ADAPTERS_BY_PLATFORM)) {
+      if (adapter) {
+        warningsByPlatform[platform] = adapter.validateMediaConstraints(mediaRef);
+      }
+    }
+
+    res.json({ mediaAssetId: asset.id, warningsByPlatform });
   },
 );
 

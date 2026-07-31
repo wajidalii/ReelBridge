@@ -14,6 +14,7 @@ import { requireAuth } from '../auth/middleware.js';
 import {
   assertBatchOwnership,
   assertMediaAssetOwnership,
+  assertPostItemOwnership,
   assertTargetOwnership,
   ResourceNotFoundError,
 } from '../ownership/assertOwnership.js';
@@ -106,6 +107,43 @@ batchesRouter.post(
       })
       .returning();
     res.status(201).json(item);
+  },
+);
+
+// Lets the batch upload UI's "Remove" action fully undo adding a video to a
+// batch — without this, a post_item's `ON DELETE RESTRICT` on media_asset_id
+// means DELETE /api/media/:id alone 409s once an item references it, leaving
+// a video the user thought they removed still attached to the batch.
+batchesRouter.delete(
+  '/:id/items/:itemId',
+  requireAuth,
+  requireOwnership('id', assertBatchOwnership),
+  async (req, res) => {
+    const batchId = req.params.id as string;
+    const itemId = req.params.itemId as string;
+
+    try {
+      await assertPostItemOwnership(req.userId!, itemId);
+    } catch (error) {
+      if (error instanceof ResourceNotFoundError) {
+        res.status(404).json({ error: 'Post item not found' });
+        return;
+      }
+      throw error;
+    }
+
+    const db = getDb();
+    const [item] = await db
+      .select({ id: postItems.id })
+      .from(postItems)
+      .where(and(eq(postItems.id, itemId), eq(postItems.batchId, batchId)));
+    if (!item) {
+      res.status(404).json({ error: 'Post item not found in this batch' });
+      return;
+    }
+
+    await db.delete(postItems).where(eq(postItems.id, itemId));
+    res.status(204).send();
   },
 );
 
