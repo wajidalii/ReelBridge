@@ -4,6 +4,13 @@ export interface OAuthStatePayload {
   userId: string;
   nonce: string;
   platform: 'facebook' | 'google';
+  /**
+   * What the user actually clicked ("Connect Facebook" vs "Connect Instagram") —
+   * both drive the same Facebook Login for Business flow, so this rides along in
+   * the signed state to survive the redirect round-trip and let the callback tell
+   * the client which success/error copy to show.
+   */
+  intent: 'facebook' | 'instagram';
 }
 
 function loadJwtSecret(): string {

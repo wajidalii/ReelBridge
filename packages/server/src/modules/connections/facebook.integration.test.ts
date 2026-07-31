@@ -5,7 +5,7 @@ import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { getDb, getPool, platformConnections, publishTargets, users } from '@reelbridge/shared';
 import { createApp } from '../../app.js';
-import { signOAuthState } from './oauthState.js';
+import { signOAuthState, verifyOAuthState } from './oauthState.js';
 
 // `||=` rather than `??=`: a real .env commonly has these as empty-string
 // placeholders (see .env.example), which `??=` would not treat as "unset".
@@ -38,6 +38,12 @@ function jsonResponse(body: unknown): Response {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function redirectLocation(res: { headers: Record<string, string | undefined> }): URL {
+  const location = res.headers.location;
+  if (!location) throw new Error('Expected a Location header on the redirect response');
+  return new URL(location, 'http://localhost');
 }
 
 describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
@@ -96,14 +102,22 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const state = signOAuthState({ userId, nonce: 'test-nonce', platform: 'facebook' });
+    const state = signOAuthState({
+      userId,
+      nonce: 'test-nonce',
+      platform: 'facebook',
+      intent: 'facebook',
+    });
     const res = await request(app).get(
       `/api/connections/facebook/callback?code=auth-code-123&state=${encodeURIComponent(state)}`,
     );
 
-    expect(res.status).toBe(200);
-    expect(res.body.pagesFound).toBe(2);
-    expect(res.body.instagramAccountsFound).toBe(1);
+    expect(res.status).toBe(302);
+    const location = redirectLocation(res);
+    expect(location.pathname).toBe('/connect/facebook');
+    expect(location.searchParams.get('connected')).toBe('1');
+    expect(location.searchParams.get('pages')).toBe('2');
+    expect(location.searchParams.get('instagram')).toBe('1');
 
     const targets = await getDb()
       .select()
@@ -146,25 +160,84 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const state = signOAuthState({ userId, nonce: 'test-nonce-2', platform: 'facebook' });
+    const state = signOAuthState({
+      userId,
+      nonce: 'test-nonce-2',
+      platform: 'facebook',
+      intent: 'facebook',
+    });
     const res = await request(app).get(
       `/api/connections/facebook/callback?code=auth-code-empty&state=${encodeURIComponent(state)}`,
     );
 
-    expect(res.status).toBe(200);
-    expect(res.body.pagesFound).toBe(0);
-    expect(res.body.note).toMatch(/Business Portfolio/);
+    expect(res.status).toBe(302);
+    const location = redirectLocation(res);
+    expect(location.searchParams.get('pages')).toBe('0');
+    expect(location.searchParams.get('instagram')).toBe('0');
   });
 
-  it('rejects an invalid/expired state', async () => {
+  it('redirects with an error param on an invalid/expired state', async () => {
     const res = await request(app).get(
       '/api/connections/facebook/callback?code=x&state=not-a-real-signed-token',
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    const location = redirectLocation(res);
+    expect(location.pathname).toBe('/connect/facebook');
+    expect(location.searchParams.get('error')).toMatch(/invalid|expired/i);
   });
 
-  it('rejects a missing code or state', async () => {
+  it('redirects with an error param on a missing code or state', async () => {
     const res = await request(app).get('/api/connections/facebook/callback');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    const location = redirectLocation(res);
+    expect(location.searchParams.get('error')).toMatch(/missing/i);
+  });
+
+  it('threads the intent (facebook vs instagram) through /start -> signed state -> /callback redirect', async () => {
+    // A real browser redirect round-trip drops the original click's query
+    // string, so /start must embed `intent` in the signed state and /callback
+    // must echo it back — this is what lets the client show Instagram-specific
+    // copy after the real OAuth flow, not just when the URL is hand-crafted.
+    const email = `${TEST_EMAIL_PREFIX}intent-${Date.now()}@example.com`;
+    const signupRes = await request(app)
+      .post('/api/auth/signup')
+      .send({ email, password: 'correct horse battery staple' });
+    expect(signupRes.status).toBe(201);
+    const authCookies = signupRes.headers['set-cookie'] as unknown as string[];
+
+    const startRes = await request(app)
+      .get('/api/connections/facebook/start?intent=instagram')
+      .set('Cookie', authCookies);
+    expect(startRes.status).toBe(302);
+    const oauthUrl = redirectLocation(startRes);
+    const state = oauthUrl.searchParams.get('state');
+    expect(state).toBeTruthy();
+    expect(verifyOAuthState(state!).intent).toBe('instagram');
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('/oauth/access_token') && urlStr.includes('code=intent-test-code')) {
+        return jsonResponse({ access_token: 'short-lived-token-intent' });
+      }
+      if (
+        urlStr.includes('/oauth/access_token') &&
+        urlStr.includes('grant_type=fb_exchange_token')
+      ) {
+        return jsonResponse({ access_token: 'long-lived-token-intent', expires_in: 5184000 });
+      }
+      if (urlStr.includes('/me/accounts')) {
+        return jsonResponse({ data: [] });
+      }
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const callbackRes = await request(app).get(
+      `/api/connections/facebook/callback?code=intent-test-code&state=${encodeURIComponent(state!)}`,
+    );
+    expect(callbackRes.status).toBe(302);
+    const location = redirectLocation(callbackRes);
+    expect(location.searchParams.get('intent')).toBe('instagram');
+    expect(location.searchParams.get('connected')).toBe('1');
   });
 });

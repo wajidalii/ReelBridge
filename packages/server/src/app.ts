@@ -8,6 +8,7 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { authRouter } from './modules/auth/router.js';
 import { batchesRouter } from './modules/batches/batchesRouter.js';
+import { configRouter } from './modules/config/configRouter.js';
 import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
 import { facebookTargetsRouter } from './modules/connections/facebookTargetsRouter.js';
 import { mediaRouter } from './modules/media/mediaRouter.js';
@@ -27,6 +28,7 @@ export function createApp() {
     res.json({ status: 'ok' });
   });
 
+  app.use('/api/config', configRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/connections/facebook', facebookConnectionsRouter);
   app.use('/api/targets/facebook', facebookTargetsRouter);
