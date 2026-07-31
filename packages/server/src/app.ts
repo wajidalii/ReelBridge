@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express from 'express';
 import { authRouter } from './modules/auth/router.js';
+import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
 import { ownershipErrorHandler } from './modules/ownership/middleware.js';
 
 export function createApp() {
@@ -18,6 +19,7 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/connections/facebook', facebookConnectionsRouter);
 
   app.use(ownershipErrorHandler);
 

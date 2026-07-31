@@ -8,7 +8,9 @@ import { createApp } from '../../app.js';
 import { getDb, getPool } from '../../db/client.js';
 import { refreshTokens, users } from '../../db/schema.js';
 
-process.env.JWT_SECRET ??= 'test-jwt-secret-for-integration-tests-only';
+// `||=` rather than `??=`: a real .env commonly has this as an empty-string
+// placeholder before secrets are filled in, which `??=` would not override.
+process.env.JWT_SECRET ||= 'test-jwt-secret-for-integration-tests-only';
 
 const TEST_EMAIL_PREFIX = 'reelbridge-auth-integration-test+';
 
