@@ -1,5 +1,5 @@
 import type { Job, Processor } from 'bullmq';
-import type { PlatformType } from '@reelbridge/shared';
+import type { PlatformType } from '../platform-adapter.js';
 import { publishToTargetQueueName } from './keys.js';
 import { getOrCreateWorker, getQueue } from './registry.js';
 

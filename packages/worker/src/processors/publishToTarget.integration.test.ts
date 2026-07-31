@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import type { PublishToTargetJobData } from '@reelbridge/shared';
 import {
   createStorageAdapterFromEnv,
   encrypt,
@@ -18,7 +19,6 @@ import { Client } from 'pg';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
 import { processPublishToTarget } from './publishToTarget.js';
-import type { PublishToTargetJobData } from '../queues/publishToTarget.js';
 
 process.env.ENCRYPTION_KEY ||= 'l7h1fhRbl+M+3zH5zb+r7GdNaEDefpRIrBBXA7DB1NQ=';
 

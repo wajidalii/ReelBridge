@@ -7,3 +7,8 @@ export * from './db/schema.js';
 export * from './db/client.js';
 export * from './storage/StorageAdapter.js';
 export * from './storage/s3StorageAdapter.js';
+export * from './queues/connection.js';
+export * from './queues/keys.js';
+export * from './queues/registry.js';
+export * from './queues/publishToTarget.js';
+export * from './queues/pollStatus.js';

@@ -1,4 +1,4 @@
-import type { PlatformType } from '@reelbridge/shared';
+import type { PlatformType } from '../platform-adapter.js';
 
 /**
  * Rate limits are per (platform, external account/project), not global or
