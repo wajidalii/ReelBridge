@@ -54,6 +54,13 @@ jobs:
 
       - run: npm run lint
 
+      # Builds packages/shared and packages/platforms/* first (dependency order
+      # matches the root package.json workspaces list), producing the dist/*.d.ts
+      # output that server/worker/client need to resolve @reelbridge/* imports —
+      # typecheck alone can't do this since each package's typecheck script is a
+      # plain `tsc --noEmit` with no emit step of its own.
+      - run: npm run build
+
       - run: npm run typecheck
 
       - run: npm run db:migrate --workspace=@reelbridge/server
