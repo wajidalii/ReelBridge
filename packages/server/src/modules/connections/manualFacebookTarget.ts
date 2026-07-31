@@ -1,7 +1,5 @@
-import { encrypt } from '@reelbridge/shared';
+import { encrypt, getDb, platformConnections } from '@reelbridge/shared';
 import { and, eq } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
-import { platformConnections } from '../../db/schema.js';
 
 /**
  * Manual entry doesn't come from an OAuth handshake, but publish_targets.platform_connection_id

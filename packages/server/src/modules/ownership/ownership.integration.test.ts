@@ -4,9 +4,10 @@ import express from 'express';
 import { Client } from 'pg';
 import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { Database } from '../../db/client.js';
-import { getDb, getPool } from '../../db/client.js';
 import {
+  type Database,
+  getDb,
+  getPool,
   mediaAssets,
   platformConnections,
   postBatches,
@@ -14,7 +15,7 @@ import {
   postTargets,
   publishTargets,
   users,
-} from '../../db/schema.js';
+} from '@reelbridge/shared';
 import {
   assertBatchOwnership,
   assertMediaAssetOwnership,

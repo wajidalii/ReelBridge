@@ -1,8 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
-import { getDb } from '../../db/client.js';
-import { users } from '../../db/schema.js';
+import { getDb, users } from '@reelbridge/shared';
 import { clearAuthCookies, REFRESH_TOKEN_COOKIE, setAuthCookies } from './cookies.js';
 import { signAccessToken } from './jwt.js';
 import { hashPassword, verifyPassword } from './password.js';

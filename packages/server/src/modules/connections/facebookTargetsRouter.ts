@@ -1,9 +1,7 @@
-import { encrypt } from '@reelbridge/shared';
+import { encrypt, getDb, publishTargets } from '@reelbridge/shared';
 import { validatePageToken } from '@reelbridge/platform-facebook';
 import { Router } from 'express';
 import { z } from 'zod';
-import { getDb } from '../../db/client.js';
-import { publishTargets } from '../../db/schema.js';
 import { requireAuth } from '../auth/middleware.js';
 import { getOrCreateManualFacebookConnection } from './manualFacebookTarget.js';
 

@@ -1,6 +1,5 @@
 import 'dotenv/config';
-import { getDb, getPool } from './client.js';
-import { plans } from './schema.js';
+import { getDb, getPool, plans } from '@reelbridge/shared';
 
 async function main() {
   const db = getDb();

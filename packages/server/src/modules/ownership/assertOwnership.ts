@@ -1,12 +1,12 @@
 import { and, eq } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
 import {
+  getDb,
   mediaAssets,
   postBatches,
   postItems,
   postTargets,
   publishTargets,
-} from '../../db/schema.js';
+} from '@reelbridge/shared';
 
 /**
  * Thrown by every assert*Ownership check below. Maps to a 404 response (see

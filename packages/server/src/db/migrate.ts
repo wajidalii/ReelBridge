@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { getDb, getPool } from './client.js';
+import { getDb, getPool } from '@reelbridge/shared';
 
 async function main() {
   await migrate(getDb(), { migrationsFolder: './src/db/migrations' });
