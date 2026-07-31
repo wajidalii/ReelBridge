@@ -7,3 +7,4 @@ planning
 SAAS_PLAN.md
 README.md
 package-lock.json
+packages/*/src/db/migrations/meta
