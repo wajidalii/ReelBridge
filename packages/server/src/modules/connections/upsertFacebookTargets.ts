@@ -1,9 +1,7 @@
-import { encrypt } from '@reelbridge/shared';
+import { encrypt, getDb, platformConnections, publishTargets } from '@reelbridge/shared';
 import type { FacebookPage } from '@reelbridge/platform-facebook';
 import { fetchPageInstagramAccount } from '@reelbridge/platform-facebook';
 import { and, eq } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
-import { platformConnections, publishTargets } from '../../db/schema.js';
 
 export interface UpsertFacebookConnectionResult {
   connectionId: string;

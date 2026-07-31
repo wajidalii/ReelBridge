@@ -4,9 +4,8 @@ import { eq, like } from 'drizzle-orm';
 import { Client } from 'pg';
 import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
+import { getDb, getPool, refreshTokens, users } from '@reelbridge/shared';
 import { createApp } from '../../app.js';
-import { getDb, getPool } from '../../db/client.js';
-import { refreshTokens, users } from '../../db/schema.js';
 
 // `||=` rather than `??=`: a real .env commonly has this as an empty-string
 // placeholder before secrets are filled in, which `??=` would not override.

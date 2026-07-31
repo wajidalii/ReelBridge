@@ -3,9 +3,8 @@ import { and, eq, like } from 'drizzle-orm';
 import { Client } from 'pg';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { getDb, getPool, publishTargets, users } from '@reelbridge/shared';
 import { createApp } from '../../app.js';
-import { getDb, getPool } from '../../db/client.js';
-import { publishTargets, users } from '../../db/schema.js';
 import { signAccessToken } from '../auth/jwt.js';
 
 // `||=` rather than `??=`: a real .env commonly has these as empty-string

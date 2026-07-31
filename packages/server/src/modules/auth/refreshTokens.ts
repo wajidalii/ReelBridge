@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, gt, isNull } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
-import { refreshTokens } from '../../db/schema.js';
+import { getDb, refreshTokens } from '@reelbridge/shared';
 
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const REFRESH_TOKEN_BYTES = 32;
