@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import {
   getDb,
   getPool,
@@ -42,7 +43,36 @@ async function isDatabaseReachable(): Promise<boolean> {
   }
 }
 
-const dbReachable = await isDatabaseReachable();
+async function isStorageReachable(): Promise<boolean> {
+  if (
+    !process.env.S3_BUCKET ||
+    !process.env.S3_ACCESS_KEY_ID ||
+    !process.env.S3_SECRET_ACCESS_KEY
+  ) {
+    return false;
+  }
+  try {
+    const client = new S3Client({
+      region: process.env.S3_REGION,
+      endpoint: process.env.S3_ENDPOINT,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY_ID,
+        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+      },
+    });
+    await client.send(new HeadBucketCommand({ Bucket: process.env.S3_BUCKET }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const [dbReachable, storageReachable] = await Promise.all([
+  isDatabaseReachable(),
+  isStorageReachable(),
+]);
+const ready = dbReachable && storageReachable;
 
 async function createTestUser(email: string) {
   const db = getDb();
@@ -51,7 +81,7 @@ async function createTestUser(email: string) {
   return user;
 }
 
-describe.skipIf(!dbReachable)('media upload API', () => {
+describe.skipIf(!ready)('media upload API', () => {
   const app = createApp();
 
   afterAll(async () => {
