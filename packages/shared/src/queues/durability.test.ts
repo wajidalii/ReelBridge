@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
 import { describe, expect, it, vi } from 'vitest';

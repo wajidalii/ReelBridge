@@ -1,5 +1,5 @@
 import { facebookPageAdapter } from '@reelbridge/platform-facebook';
-import type { PlatformAdapter } from '@reelbridge/shared';
+import type { PlatformAdapter, PublishToTargetJobData } from '@reelbridge/shared';
 import {
   createStorageAdapterFromEnv,
   decrypt,
@@ -11,7 +11,6 @@ import {
 } from '@reelbridge/shared';
 import type { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
-import type { PublishToTargetJobData } from '../queues/publishToTarget.js';
 
 const ADAPTERS_BY_PLATFORM: Partial<Record<string, PlatformAdapter>> = {
   facebook_page: facebookPageAdapter,
