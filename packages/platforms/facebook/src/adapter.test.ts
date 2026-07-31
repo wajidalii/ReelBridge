@@ -187,21 +187,23 @@ describe('facebookPageAdapter.checkStatus', () => {
 });
 
 describe('facebookPageAdapter.validateMediaConstraints', () => {
-  it('warns when duration is outside the 4-90 second Reels range', () => {
+  it('blocks when duration is outside the 4-90 second Reels range', () => {
     const warnings = facebookPageAdapter.validateMediaConstraints({
       ...mediaAsset,
       durationSeconds: 120,
     });
-    expect(warnings.some((w) => w.code === 'duration_out_of_range')).toBe(true);
+    const warning = warnings.find((w) => w.code === 'duration_out_of_range');
+    expect(warning).toMatchObject({ severity: 'blocking', affectedField: 'duration' });
   });
 
-  it('warns when aspect ratio is landscape rather than vertical', () => {
+  it('warns (non-blocking) when aspect ratio is landscape rather than vertical', () => {
     const warnings = facebookPageAdapter.validateMediaConstraints({
       ...mediaAsset,
       width: 1920,
       height: 1080,
     });
-    expect(warnings.some((w) => w.code === 'non_vertical_aspect_ratio')).toBe(true);
+    const warning = warnings.find((w) => w.code === 'non_vertical_aspect_ratio');
+    expect(warning).toMatchObject({ severity: 'warning', affectedField: 'aspectRatio' });
   });
 
   it('returns no warnings for a conforming video', () => {
