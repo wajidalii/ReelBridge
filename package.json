@@ -1,0 +1,41 @@
+{
+  "name": "reelbridge",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/platforms/*",
+    "packages/server",
+    "packages/worker",
+    "packages/client"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:server": "npm run dev --workspace=@reelbridge/server",
+    "dev:worker": "npm run dev --workspace=@reelbridge/worker",
+    "dev:client": "npm run dev --workspace=@reelbridge/client",
+    "db:generate": "npm run db:generate --workspace=@reelbridge/server",
+    "db:migrate": "npm run db:migrate --workspace=@reelbridge/server",
+    "db:seed": "npm run db:seed --workspace=@reelbridge/server"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^22.10.5",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.19.1",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
