@@ -1,4 +1,4 @@
-import { drizzle } from 'drizzle-orm/node-postgres';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import * as schema from './schema.js';
 
@@ -10,8 +10,26 @@ function loadDatabaseUrl(): string {
   return url;
 }
 
-export const pool = new Pool({ connectionString: loadDatabaseUrl() });
+let poolInstance: Pool | undefined;
+let dbInstance: NodePgDatabase<typeof schema> | undefined;
 
-export const db = drizzle(pool, { schema });
+/**
+ * Lazily constructed so importing this module never fails just because
+ * DATABASE_URL isn't set (e.g. code that conditionally needs the DB, or a test
+ * file that wants to check reachability and skip gracefully otherwise).
+ */
+export function getPool(): Pool {
+  if (!poolInstance) {
+    poolInstance = new Pool({ connectionString: loadDatabaseUrl() });
+  }
+  return poolInstance;
+}
 
-export type Database = typeof db;
+export function getDb(): NodePgDatabase<typeof schema> {
+  if (!dbInstance) {
+    dbInstance = drizzle(getPool(), { schema });
+  }
+  return dbInstance;
+}
+
+export type Database = NodePgDatabase<typeof schema>;

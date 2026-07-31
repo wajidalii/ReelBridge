@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
-import { db, pool } from './client.js';
+import { getDb, getPool } from './client.js';
 
 async function main() {
-  await migrate(db, { migrationsFolder: './src/db/migrations' });
+  await migrate(getDb(), { migrationsFolder: './src/db/migrations' });
   console.log('Migrations applied successfully.');
-  await pool.end();
+  await getPool().end();
 }
 
 main().catch((error: unknown) => {
