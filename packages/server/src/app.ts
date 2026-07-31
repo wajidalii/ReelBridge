@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express from 'express';
 import { authRouter } from './modules/auth/router.js';
+import { ownershipErrorHandler } from './modules/ownership/middleware.js';
 
 export function createApp() {
   const app = express();
@@ -17,6 +18,8 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRouter);
+
+  app.use(ownershipErrorHandler);
 
   return app;
 }
