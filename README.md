@@ -1,4 +1,7 @@
 # ReelBridge
+
+[![CI](https://github.com/wajidalii/ReelBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/wajidalii/ReelBridge/actions/workflows/ci.yml)
+
 bridges your content to every platform
 
 ## Workspace layout
