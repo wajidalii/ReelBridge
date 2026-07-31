@@ -1,0 +1,9 @@
+node_modules
+dist
+build
+coverage
+.claude
+planning
+SAAS_PLAN.md
+README.md
+package-lock.json
