@@ -1,12 +1,13 @@
 import 'dotenv/config';
-import { db, pool } from './client.js';
+import { getDb, getPool } from './client.js';
 import { plans } from './schema.js';
 
 async function main() {
+  const db = getDb();
   const existing = await db.select().from(plans).limit(1);
   if (existing.length > 0) {
     console.log('Plans already seeded, skipping.');
-    await pool.end();
+    await getPool().end();
     return;
   }
 
@@ -19,7 +20,7 @@ async function main() {
   });
 
   console.log('Seeded default plan.');
-  await pool.end();
+  await getPool().end();
 }
 
 main().catch((error: unknown) => {
