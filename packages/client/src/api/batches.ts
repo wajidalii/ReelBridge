@@ -83,3 +83,50 @@ export function autoDistribute(
     daily_slot_times: dailySlotTimes,
   });
 }
+
+export interface PreviewWarning {
+  code: string;
+  severity: 'blocking' | 'warning';
+  affectedField: string;
+  message: string;
+}
+
+export interface PreviewRow {
+  id: string;
+  postItemId: string;
+  mediaAssetId: string;
+  originalFilename: string | null;
+  publishTargetId: string;
+  platform: string | null;
+  targetDisplayName: string | null;
+  resolvedCaption: string;
+  resolvedTitle: string | null;
+  scheduledAt: string | null;
+  schedulingMode: 'native_scheduled' | 'awaiting_app_managed_publish' | null;
+  warnings: PreviewWarning[];
+  blocking: boolean;
+}
+
+export interface PreviewResponse {
+  batchId: string;
+  batchName: string;
+  rows: PreviewRow[];
+}
+
+export function usePreview(batchId: string | undefined) {
+  return useQuery({
+    queryKey: ['batch-preview', batchId],
+    queryFn: () => apiGet<PreviewResponse>(`/batches/${batchId}/preview`),
+    enabled: batchId !== undefined,
+  });
+}
+
+export interface PublishBatchResponse {
+  batchId: string;
+  queuedCount: number;
+  postTargetIds: string[];
+}
+
+export function publishBatch(batchId: string): Promise<PublishBatchResponse> {
+  return apiPost<PublishBatchResponse>(`/batches/${batchId}/publish`, {});
+}

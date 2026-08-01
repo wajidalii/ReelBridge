@@ -8,15 +8,18 @@ import type { PlatformType } from '../platform-adapter.js';
  * on the Worker, not the Queue, so the concrete mechanism here is one
  * queue+worker pair per key, not a single global queue with an internal limiter.
  */
+// `|`-delimited, not `:` — BullMQ's QueueBase rejects any queue name containing
+// a colon, and this key doubles as the queue name suffix in
+// publishToTargetQueueName below.
 export function rateLimiterKey(platform: PlatformType, externalAccountOrProjectId: string): string {
-  return `${platform}:${externalAccountOrProjectId}`;
+  return `${platform}|${externalAccountOrProjectId}`;
 }
 
 export function publishToTargetQueueName(
   platform: PlatformType,
   externalAccountOrProjectId: string,
 ): string {
-  return `publish-to-target:${rateLimiterKey(platform, externalAccountOrProjectId)}`;
+  return `publish-to-target|${rateLimiterKey(platform, externalAccountOrProjectId)}`;
 }
 
 /**

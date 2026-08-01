@@ -1,4 +1,5 @@
 import {
+  enqueuePublishToTarget,
   generateSchedulingSlots,
   getDb,
   mediaAssets,
@@ -7,6 +8,7 @@ import {
   postItems,
   postTargets,
   publishTargets,
+  type Database,
   type ValidationSeverity,
 } from '@reelbridge/shared';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -340,6 +342,7 @@ interface PreviewWarning {
 }
 
 interface PreviewRow {
+  id: string;
   postItemId: string;
   mediaAssetId: string;
   originalFilename: string | null;
@@ -355,124 +358,202 @@ interface PreviewRow {
   blocking: boolean;
 }
 
+interface PreviewResult {
+  batch: typeof postBatches.$inferSelect;
+  rows: PreviewRow[];
+  /** Keyed by publish_targets.id — lets callers (e.g. the publish handler) look up
+   * a row's underlying publish target (platform + externalId) without re-querying. */
+  publishTargetById: Map<string, typeof publishTargets.$inferSelect>;
+}
+
 // Dry-run: resolves every (media, target, time, caption) combination for a
 // batch with zero DB writes. Safe to call repeatedly while the batch is still
-// in draft — nothing here mutates state, so it's naturally idempotent.
+// in draft — nothing here mutates state, so it's naturally idempotent. Shared
+// by GET /:id/preview and POST /:id/publish so both endpoints agree on what's
+// blocking.
+async function buildPreviewRows(db: Database, batchId: string): Promise<PreviewResult | null> {
+  const [batch] = await db.select().from(postBatches).where(eq(postBatches.id, batchId));
+  if (!batch) {
+    return null;
+  }
+
+  const items = await db.select().from(postItems).where(eq(postItems.batchId, batchId));
+  const itemIds = items.map((item) => item.id);
+  const targets =
+    itemIds.length > 0
+      ? await db.select().from(postTargets).where(inArray(postTargets.postItemId, itemIds))
+      : [];
+
+  const mediaAssetIds = [...new Set(items.map((item) => item.mediaAssetId))];
+  const mediaRows =
+    mediaAssetIds.length > 0
+      ? await db.select().from(mediaAssets).where(inArray(mediaAssets.id, mediaAssetIds))
+      : [];
+  const mediaById = new Map(mediaRows.map((media) => [media.id, media]));
+
+  const publishTargetIds = [...new Set(targets.map((target) => target.publishTargetId))];
+  const publishTargetRows =
+    publishTargetIds.length > 0
+      ? await db.select().from(publishTargets).where(inArray(publishTargets.id, publishTargetIds))
+      : [];
+  const publishTargetById = new Map(publishTargetRows.map((target) => [target.id, target]));
+
+  const rows: PreviewRow[] = [];
+
+  for (const item of items) {
+    const media = mediaById.get(item.mediaAssetId);
+    const itemTargets = targets.filter((target) => target.postItemId === item.id);
+
+    for (const target of itemTargets) {
+      const publishTarget = publishTargetById.get(target.publishTargetId);
+      const adapter = publishTarget
+        ? PREVIEW_ADAPTERS_BY_PLATFORM[publishTarget.platform]
+        : undefined;
+
+      const resolvedCaption = target.captionOverride ?? item.defaultCaption;
+      const resolvedTitle =
+        target.titleOverride ??
+        item.defaultTitle ??
+        (publishTarget?.platform === 'youtube_channel'
+          ? resolvedCaption.split('\n')[0]
+          : undefined);
+
+      const warnings: PreviewWarning[] = [];
+
+      if (!publishTarget) {
+        warnings.push({
+          code: 'target_not_found',
+          severity: 'blocking',
+          affectedField: 'target',
+          message: 'This target no longer exists.',
+        });
+      } else if (!publishTarget.isActive) {
+        warnings.push({
+          code: 'target_needs_reconnect',
+          severity: 'blocking',
+          affectedField: 'target',
+          message: 'This target needs to be reconnected before it can be scheduled.',
+        });
+      }
+
+      if (!media) {
+        warnings.push({
+          code: 'media_not_found',
+          severity: 'blocking',
+          affectedField: 'media',
+          message: 'The media asset for this item no longer exists.',
+        });
+      } else if (adapter) {
+        warnings.push(
+          ...adapter.validateMediaConstraints({
+            mediaAssetId: media.id,
+            storageKey: media.storageKey,
+            originalFilename: media.originalFilename,
+            fileSizeBytes: media.fileSizeBytes,
+            durationSeconds: media.durationSeconds ?? undefined,
+            width: media.width ?? undefined,
+            height: media.height ?? undefined,
+          }),
+        );
+      }
+
+      rows.push({
+        id: target.id,
+        postItemId: item.id,
+        mediaAssetId: item.mediaAssetId,
+        originalFilename: media?.originalFilename ?? null,
+        publishTargetId: target.publishTargetId,
+        platform: publishTarget?.platform ?? null,
+        targetDisplayName: publishTarget?.displayName ?? null,
+        resolvedCaption,
+        resolvedTitle: resolvedTitle ?? null,
+        scheduledAt: target.scheduledAt,
+        schedulingMode: adapter
+          ? adapter.capabilities.nativeScheduling
+            ? 'native_scheduled'
+            : 'awaiting_app_managed_publish'
+          : null,
+        warnings,
+        blocking: warnings.some((warning) => warning.severity === 'blocking'),
+      });
+    }
+  }
+
+  return { batch, rows, publishTargetById };
+}
+
 batchesRouter.get(
   '/:id/preview',
+  requireAuth,
+  requireOwnership('id', assertBatchOwnership),
+  async (req, res) => {
+    const batchId = req.params.id as string;
+    const preview = await buildPreviewRows(getDb(), batchId);
+    if (!preview) {
+      res.status(404).json({ error: 'Batch not found' });
+      return;
+    }
+
+    res.json({ batchId, batchName: preview.batch.name, rows: preview.rows });
+  },
+);
+
+// Enqueues every resolved (post_item, post_target) row for publishing. All-or-
+// nothing: if any row is still blocking (see buildPreviewRows above), nothing
+// is enqueued — matches design.md's "Schedule batch is disabled until blocking
+// issues are resolved". Real publishing happens asynchronously in the worker;
+// this only queues the jobs and marks rows/batch as in-flight.
+batchesRouter.post(
+  '/:id/publish',
   requireAuth,
   requireOwnership('id', assertBatchOwnership),
   async (req, res) => {
     const db = getDb();
     const batchId = req.params.id as string;
 
-    const [batch] = await db.select().from(postBatches).where(eq(postBatches.id, batchId));
-    if (!batch) {
+    const preview = await buildPreviewRows(db, batchId);
+    if (!preview) {
       res.status(404).json({ error: 'Batch not found' });
       return;
     }
 
-    const items = await db.select().from(postItems).where(eq(postItems.batchId, batchId));
-    const itemIds = items.map((item) => item.id);
-    const targets =
-      itemIds.length > 0
-        ? await db.select().from(postTargets).where(inArray(postTargets.postItemId, itemIds))
-        : [];
+    const { rows, publishTargetById } = preview;
 
-    const mediaAssetIds = [...new Set(items.map((item) => item.mediaAssetId))];
-    const mediaRows =
-      mediaAssetIds.length > 0
-        ? await db.select().from(mediaAssets).where(inArray(mediaAssets.id, mediaAssetIds))
-        : [];
-    const mediaById = new Map(mediaRows.map((media) => [media.id, media]));
-
-    const publishTargetIds = [...new Set(targets.map((target) => target.publishTargetId))];
-    const publishTargetRows =
-      publishTargetIds.length > 0
-        ? await db.select().from(publishTargets).where(inArray(publishTargets.id, publishTargetIds))
-        : [];
-    const publishTargetById = new Map(publishTargetRows.map((target) => [target.id, target]));
-
-    const rows: PreviewRow[] = [];
-
-    for (const item of items) {
-      const media = mediaById.get(item.mediaAssetId);
-      const itemTargets = targets.filter((target) => target.postItemId === item.id);
-
-      for (const target of itemTargets) {
-        const publishTarget = publishTargetById.get(target.publishTargetId);
-        const adapter = publishTarget
-          ? PREVIEW_ADAPTERS_BY_PLATFORM[publishTarget.platform]
-          : undefined;
-
-        const resolvedCaption = target.captionOverride ?? item.defaultCaption;
-        const resolvedTitle =
-          target.titleOverride ??
-          item.defaultTitle ??
-          (publishTarget?.platform === 'youtube_channel'
-            ? resolvedCaption.split('\n')[0]
-            : undefined);
-
-        const warnings: PreviewWarning[] = [];
-
-        if (!publishTarget) {
-          warnings.push({
-            code: 'target_not_found',
-            severity: 'blocking',
-            affectedField: 'target',
-            message: 'This target no longer exists.',
-          });
-        } else if (!publishTarget.isActive) {
-          warnings.push({
-            code: 'target_needs_reconnect',
-            severity: 'blocking',
-            affectedField: 'target',
-            message: 'This target needs to be reconnected before it can be scheduled.',
-          });
-        }
-
-        if (!media) {
-          warnings.push({
-            code: 'media_not_found',
-            severity: 'blocking',
-            affectedField: 'media',
-            message: 'The media asset for this item no longer exists.',
-          });
-        } else if (adapter) {
-          warnings.push(
-            ...adapter.validateMediaConstraints({
-              mediaAssetId: media.id,
-              storageKey: media.storageKey,
-              originalFilename: media.originalFilename,
-              fileSizeBytes: media.fileSizeBytes,
-              durationSeconds: media.durationSeconds ?? undefined,
-              width: media.width ?? undefined,
-              height: media.height ?? undefined,
-            }),
-          );
-        }
-
-        rows.push({
-          postItemId: item.id,
-          mediaAssetId: item.mediaAssetId,
-          originalFilename: media?.originalFilename ?? null,
-          publishTargetId: target.publishTargetId,
-          platform: publishTarget?.platform ?? null,
-          targetDisplayName: publishTarget?.displayName ?? null,
-          resolvedCaption,
-          resolvedTitle: resolvedTitle ?? null,
-          scheduledAt: target.scheduledAt,
-          schedulingMode: adapter
-            ? adapter.capabilities.nativeScheduling
-              ? 'native_scheduled'
-              : 'awaiting_app_managed_publish'
-            : null,
-          warnings,
-          blocking: warnings.some((warning) => warning.severity === 'blocking'),
-        });
-      }
+    if (rows.length === 0) {
+      res.status(400).json({ error: 'Nothing to publish' });
+      return;
     }
 
-    res.json({ batchId, batchName: batch.name, rows });
+    const blockingCount = rows.filter((row) => row.blocking).length;
+    if (blockingCount > 0) {
+      res.status(409).json({
+        error: 'Resolve blocking issues before scheduling this batch.',
+        blockingCount,
+      });
+      return;
+    }
+
+    const postTargetIds: string[] = [];
+    for (const row of rows) {
+      const publishTarget = publishTargetById.get(row.publishTargetId);
+      // Unreachable in practice: a missing/inactive publish target would have
+      // set row.blocking above, and we already returned 409 in that case.
+      if (!publishTarget || !row.platform) {
+        continue;
+      }
+
+      await enqueuePublishToTarget(publishTarget.platform, publishTarget.externalId, {
+        postTargetId: row.id,
+      });
+      await db
+        .update(postTargets)
+        .set({ status: 'queued', updatedAt: new Date() })
+        .where(eq(postTargets.id, row.id));
+      postTargetIds.push(row.id);
+    }
+
+    await db.update(postBatches).set({ status: 'active' }).where(eq(postBatches.id, batchId));
+
+    res.json({ batchId, queuedCount: postTargetIds.length, postTargetIds });
   },
 );
