@@ -32,6 +32,36 @@ export async function enqueuePublishToTarget(
   });
 }
 
+/**
+ * Re-queues a post_targets row that previously failed. A plain
+ * enqueuePublishToTarget call won't do this on its own: BullMQ's `add` is a
+ * no-op against an existing jobId (see the pinning note above), so a job
+ * that already ran to failure needs `job.retry()` to move it back to
+ * waiting — only falling back to a fresh `add` when no job exists at all
+ * (e.g. it was removed, or this row was never actually enqueued).
+ */
+export async function retryPublishToTarget(
+  platform: PlatformType,
+  externalAccountOrProjectId: string,
+  data: PublishToTargetJobData,
+): Promise<Job<PublishToTargetJobData>> {
+  const queue = getQueue<PublishToTargetJobData>(
+    publishToTargetQueueName(platform, externalAccountOrProjectId),
+  );
+  const existing = await queue.getJob(data.postTargetId);
+  if (!existing) {
+    return enqueuePublishToTarget(platform, externalAccountOrProjectId, data);
+  }
+
+  const state = await existing.getState();
+  if (state === 'failed' || state === 'completed') {
+    await existing.retry(state, { resetAttemptsMade: true });
+  }
+  // Any other state (waiting/active/delayed) already means this row is
+  // in flight — leave it alone rather than disturbing it.
+  return existing;
+}
+
 export function startPublishToTargetWorker(
   platform: PlatformType,
   externalAccountOrProjectId: string,

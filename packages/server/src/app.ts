@@ -14,6 +14,7 @@ import { facebookTargetsRouter } from './modules/connections/facebookTargetsRout
 import { googleConnectionsRouter } from './modules/connections/googleRouter.js';
 import { mediaRouter } from './modules/media/mediaRouter.js';
 import { ownershipErrorHandler } from './modules/ownership/middleware.js';
+import { postsRouter } from './modules/posts/postsRouter.js';
 import { targetsRouter } from './modules/targets/targetsRouter.js';
 
 export function createApp() {
@@ -37,6 +38,7 @@ export function createApp() {
   app.use('/api/targets', targetsRouter);
   app.use('/api/media', mediaRouter);
   app.use('/api/batches', batchesRouter);
+  app.use('/api/posts', postsRouter);
 
   app.use(ownershipErrorHandler);
 
