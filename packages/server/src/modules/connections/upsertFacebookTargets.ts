@@ -1,6 +1,12 @@
-import { encrypt, getDb, platformConnections, publishTargets } from '@reelbridge/shared';
-import type { FacebookPage } from '@reelbridge/platform-facebook';
-import { fetchPageInstagramAccount } from '@reelbridge/platform-facebook';
+import {
+  encrypt,
+  getDb,
+  platformConnections,
+  publishTargets,
+  reconcileInstagramTarget,
+} from '@reelbridge/shared';
+import type { FacebookPage, InstagramDiscoveryResult } from '@reelbridge/platform-facebook';
+import { discoverPageInstagramAccount } from '@reelbridge/platform-facebook';
 import { and, eq } from 'drizzle-orm';
 
 export interface UpsertFacebookConnectionResult {
@@ -98,30 +104,17 @@ export async function upsertFacebookConnection(
         },
       });
 
-    const igAccount = await fetchPageInstagramAccount(page.id, page.accessToken).catch(() => null);
-    if (igAccount) {
-      await db
-        .insert(publishTargets)
-        .values({
-          userId,
-          platformConnectionId: connectionId,
-          platform: 'instagram_business',
-          externalId: igAccount.id,
-          displayName: igAccount.username ?? igAccount.id,
-          tokenSource: 'oauth',
-          metadata: { linkedFacebookPageId: page.id, username: igAccount.username },
-          lastValidatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [publishTargets.userId, publishTargets.platform, publishTargets.externalId],
-          set: {
-            displayName: igAccount.username ?? igAccount.id,
-            isActive: true,
-            lastValidatedAt: new Date(),
-            metadata: { linkedFacebookPageId: page.id, username: igAccount.username },
-          },
-        });
-      instagramTargets.push({ id: igAccount.id, username: igAccount.username, pageId: page.id });
+    const discovery = await discoverPageInstagramAccount(page.id, page.accessToken).catch(
+      (): InstagramDiscoveryResult => ({ status: 'not_linked' }),
+    );
+    const account = await reconcileInstagramTarget({
+      userId,
+      platformConnectionId: connectionId,
+      facebookPageId: page.id,
+      discovery,
+    });
+    if (account) {
+      instagramTargets.push({ id: account.id, username: account.username, pageId: page.id });
     }
   }
 

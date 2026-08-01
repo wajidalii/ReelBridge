@@ -6,6 +6,13 @@ export const HEALTH_CHECK_QUEUE_NAME = 'target-health-check';
 
 export interface HealthCheckJobData {
   publishTargetId: string;
+  /**
+   * 'manual' (the user's "Run now" revalidate button) vs 'sweep' (the hourly
+   * cron trigger). Instagram re-discovery only runs for 'manual' — running it
+   * on every sweep would triple the Graph API calls made for every active
+   * Facebook Page, every hour, for no reason tied to a user action.
+   */
+  trigger?: 'manual' | 'sweep';
 }
 
 export async function enqueueHealthCheck(

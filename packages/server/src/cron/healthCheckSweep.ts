@@ -14,5 +14,7 @@ export async function enqueueDueHealthCheckJobs(): Promise<void> {
     .from(publishTargets)
     .where(and(eq(publishTargets.platform, 'facebook_page'), eq(publishTargets.isActive, true)));
 
-  await Promise.all(dueRows.map((row) => enqueueHealthCheck({ publishTargetId: row.id })));
+  await Promise.all(
+    dueRows.map((row) => enqueueHealthCheck({ publishTargetId: row.id, trigger: 'sweep' })),
+  );
 }

@@ -8,7 +8,7 @@ import {
   publishTargets,
   users,
 } from '@reelbridge/shared';
-import { eq, inArray, like } from 'drizzle-orm';
+import { and, eq, inArray, like } from 'drizzle-orm';
 import { Client } from 'pg';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
@@ -147,5 +147,160 @@ describe.skipIf(!dbReachable)('processHealthCheck (Facebook)', () => {
       .where(eq(publishTargets.id, target.id));
     expect(updated?.isActive).toBe(false);
     expect(updated?.lastValidatedAt).not.toBeNull();
+  });
+
+  it('re-discovers and upserts a newly linked Instagram Business account on re-check (issue #32)', async () => {
+    const { user, target } = await createFacebookTarget(
+      `${TEST_EMAIL_PREFIX}ig-newly-linked-${Date.now()}@example.com`,
+    );
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('instagram_business_account')) {
+        return jsonResponse({
+          instagram_business_account: { id: 'ig-recheck-1', username: 'recheck_ig' },
+        });
+      }
+      if (urlStr.includes('account_type')) {
+        return jsonResponse({ account_type: 'BUSINESS' });
+      }
+      return jsonResponse({ id: target.externalId, name: 'Health Check Test Page' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const job = {
+      data: { publishTargetId: target.id, trigger: 'manual' } as HealthCheckJobData,
+    } as Job<HealthCheckJobData>;
+    await processHealthCheck(job);
+
+    const db = getDb();
+    const [igTarget] = await db
+      .select()
+      .from(publishTargets)
+      .where(
+        and(eq(publishTargets.userId, user.id), eq(publishTargets.platform, 'instagram_business')),
+      );
+    expect(igTarget?.externalId).toBe('ig-recheck-1');
+    expect(igTarget?.isActive).toBe(true);
+  });
+
+  it('does not re-run Instagram discovery on a sweep-triggered (non-manual) re-check', async () => {
+    const { user, target } = await createFacebookTarget(
+      `${TEST_EMAIL_PREFIX}ig-sweep-skip-${Date.now()}@example.com`,
+    );
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('instagram_business_account') || urlStr.includes('account_type')) {
+        throw new Error(`Instagram discovery must not run on a sweep trigger: ${urlStr}`);
+      }
+      return jsonResponse({ id: target.externalId, name: 'Health Check Test Page' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const job = {
+      data: { publishTargetId: target.id, trigger: 'sweep' } as HealthCheckJobData,
+    } as Job<HealthCheckJobData>;
+    await processHealthCheck(job);
+
+    const db = getDb();
+    const igTargets = await db
+      .select()
+      .from(publishTargets)
+      .where(
+        and(eq(publishTargets.userId, user.id), eq(publishTargets.platform, 'instagram_business')),
+      );
+    expect(igTargets).toHaveLength(0);
+  });
+
+  it('deactivates a previously-linked Instagram target when it is downgraded to Personal on re-check', async () => {
+    const { user, target } = await createFacebookTarget(
+      `${TEST_EMAIL_PREFIX}ig-downgraded-${Date.now()}@example.com`,
+    );
+    const db = getDb();
+    await db.insert(publishTargets).values({
+      userId: user.id,
+      platformConnectionId: target.platformConnectionId,
+      platform: 'instagram_business',
+      externalId: 'ig-recheck-2',
+      displayName: 'recheck_ig_2',
+      tokenSource: 'oauth',
+      metadata: { linkedFacebookPageId: target.externalId, username: 'recheck_ig_2' },
+      isActive: true,
+    });
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('instagram_business_account')) {
+        return jsonResponse({
+          instagram_business_account: { id: 'ig-recheck-2', username: 'recheck_ig_2' },
+        });
+      }
+      if (urlStr.includes('account_type')) {
+        return jsonResponse({ account_type: 'PERSONAL' });
+      }
+      return jsonResponse({ id: target.externalId, name: 'Health Check Test Page' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const job = {
+      data: { publishTargetId: target.id, trigger: 'manual' } as HealthCheckJobData,
+    } as Job<HealthCheckJobData>;
+    await processHealthCheck(job);
+
+    const [igTarget] = await db
+      .select()
+      .from(publishTargets)
+      .where(
+        and(
+          eq(publishTargets.userId, user.id),
+          eq(publishTargets.platform, 'instagram_business'),
+          eq(publishTargets.externalId, 'ig-recheck-2'),
+        ),
+      );
+    expect(igTarget?.isActive).toBe(false);
+  });
+
+  it('deactivates a previously-linked Instagram target when the Page becomes fully unlinked on re-check', async () => {
+    const { user, target } = await createFacebookTarget(
+      `${TEST_EMAIL_PREFIX}ig-fully-unlinked-${Date.now()}@example.com`,
+    );
+    const db = getDb();
+    await db.insert(publishTargets).values({
+      userId: user.id,
+      platformConnectionId: target.platformConnectionId,
+      platform: 'instagram_business',
+      externalId: 'ig-recheck-3',
+      displayName: 'recheck_ig_3',
+      tokenSource: 'oauth',
+      metadata: { linkedFacebookPageId: target.externalId, username: 'recheck_ig_3' },
+      isActive: true,
+    });
+
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('instagram_business_account')) {
+        return jsonResponse({});
+      }
+      return jsonResponse({ id: target.externalId, name: 'Health Check Test Page' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const job = {
+      data: { publishTargetId: target.id, trigger: 'manual' } as HealthCheckJobData,
+    } as Job<HealthCheckJobData>;
+    await processHealthCheck(job);
+
+    const [igTarget] = await db
+      .select()
+      .from(publishTargets)
+      .where(
+        and(
+          eq(publishTargets.userId, user.id),
+          eq(publishTargets.platform, 'instagram_business'),
+          eq(publishTargets.externalId, 'ig-recheck-3'),
+        ),
+      );
+    expect(igTarget?.isActive).toBe(false);
   });
 });
