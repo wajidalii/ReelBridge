@@ -90,10 +90,16 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
           ],
         });
       }
-      if (urlStr.includes('graph.facebook.com/v21.0/page-1')) {
+      if (
+        urlStr.includes('graph.facebook.com/v21.0/page-1') &&
+        urlStr.includes('instagram_business_account')
+      ) {
         return jsonResponse({
           instagram_business_account: { id: 'ig-1', username: 'page_one_ig' },
         });
+      }
+      if (urlStr.includes('graph.facebook.com/v21.0/ig-1') && urlStr.includes('account_type')) {
+        return jsonResponse({ account_type: 'BUSINESS' });
       }
       if (urlStr.includes('graph.facebook.com/v21.0/page-2')) {
         return jsonResponse({});
@@ -139,6 +145,60 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
     // Token must be encrypted at rest, never stored/returned in plaintext.
     expect(connection?.accessTokenCiphertext).not.toBe('long-lived-token');
     expect(res.body).not.toHaveProperty('accessToken');
+  });
+
+  it('rejects a Page whose linked Instagram account is Personal, and never surfaces it as a target', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('/oauth/access_token') && urlStr.includes('code=auth-code-personal')) {
+        return jsonResponse({ access_token: 'short-lived-token-personal' });
+      }
+      if (
+        urlStr.includes('/oauth/access_token') &&
+        urlStr.includes('grant_type=fb_exchange_token')
+      ) {
+        return jsonResponse({ access_token: 'long-lived-token-personal', expires_in: 5184000 });
+      }
+      if (urlStr.includes('/me/accounts')) {
+        return jsonResponse({
+          data: [{ id: 'page-3', name: 'Page Three', access_token: 'page-3-token' }],
+        });
+      }
+      if (
+        urlStr.includes('graph.facebook.com/v21.0/page-3') &&
+        urlStr.includes('instagram_business_account')
+      ) {
+        return jsonResponse({
+          instagram_business_account: { id: 'ig-3', username: 'page_three_ig' },
+        });
+      }
+      if (urlStr.includes('graph.facebook.com/v21.0/ig-3') && urlStr.includes('account_type')) {
+        return jsonResponse({ account_type: 'PERSONAL' });
+      }
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const state = signOAuthState({
+      userId,
+      nonce: 'test-nonce-personal',
+      platform: 'facebook',
+      intent: 'facebook',
+    });
+    const res = await request(app).get(
+      `/api/connections/facebook/callback?code=auth-code-personal&state=${encodeURIComponent(state)}`,
+    );
+
+    expect(res.status).toBe(302);
+    const location = redirectLocation(res);
+    expect(location.searchParams.get('pages')).toBe('1');
+    expect(location.searchParams.get('instagram')).toBe('0');
+
+    const targets = await getDb()
+      .select()
+      .from(publishTargets)
+      .where(and(eq(publishTargets.userId, userId), eq(publishTargets.platform, 'instagram_business')));
+    expect(targets.find((t) => t.externalId === 'ig-3')).toBeUndefined();
   });
 
   it('treats an empty /me/accounts result as a normal outcome, not an error (Business Portfolio gap)', async () => {

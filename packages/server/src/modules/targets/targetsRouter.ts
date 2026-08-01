@@ -43,7 +43,7 @@ targetsRouter.post(
   requireOwnership('id', assertTargetOwnership),
   async (req, res) => {
     // requireOwnership already validated req.params.id is a single non-array string.
-    await enqueueHealthCheck({ publishTargetId: req.params.id as string });
+    await enqueueHealthCheck({ publishTargetId: req.params.id as string, trigger: 'manual' });
     res.status(202).json({ queued: true });
   },
 );

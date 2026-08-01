@@ -1,6 +1,6 @@
-import { validatePageToken } from '@reelbridge/platform-facebook';
-import type { HealthCheckJobData } from '@reelbridge/shared';
-import { decrypt, getDb, publishTargets } from '@reelbridge/shared';
+import { discoverPageInstagramAccount, validatePageToken } from '@reelbridge/platform-facebook';
+import type { InstagramDiscoveryOutcome, HealthCheckJobData } from '@reelbridge/shared';
+import { decrypt, getDb, publishTargets, reconcileInstagramTarget } from '@reelbridge/shared';
 import type { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 
@@ -48,4 +48,25 @@ export async function processHealthCheck(job: Job<HealthCheckJobData>): Promise<
     .update(publishTargets)
     .set({ isActive: result !== null, lastValidatedAt: new Date() })
     .where(eq(publishTargets.id, publishTargetId));
+
+  // Re-running Instagram discovery is scoped to a manual "Run now" re-check
+  // (issue #32), not the hourly cron sweep — doing it unconditionally would
+  // triple the Graph API calls made for every active Page every hour, with no
+  // user action behind it, risking Meta's rate limits for no real benefit.
+  if (result === null || job.data.trigger !== 'manual') {
+    return;
+  }
+
+  // A Page whose linked IG account changes — newly linked, unlinked, replaced,
+  // or downgraded to Personal — converges to current reality here the same
+  // way the connect flow does, instead of only ever being resolved once.
+  const discovery = await discoverPageInstagramAccount(target.externalId, accessToken).catch(
+    (): InstagramDiscoveryOutcome => ({ status: 'not_linked' }),
+  );
+  await reconcileInstagramTarget({
+    userId: target.userId,
+    platformConnectionId: target.platformConnectionId,
+    facebookPageId: target.externalId,
+    discovery,
+  });
 }
