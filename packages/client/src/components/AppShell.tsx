@@ -8,9 +8,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link to="/" className="text-lg font-semibold tracking-tight text-slate-900">
             Reel<span className="text-brand-600">Bridge</span>
           </Link>
-          <Link to="/upload" className="text-sm font-medium text-slate-600 hover:text-slate-900">
-            New batch
-          </Link>
+          <nav className="flex items-center gap-4">
+            <Link to="/posts" className="text-sm font-medium text-slate-600 hover:text-slate-900">
+              Dashboard
+            </Link>
+            <Link to="/upload" className="text-sm font-medium text-slate-600 hover:text-slate-900">
+              New batch
+            </Link>
+          </nav>
         </div>
       </header>
       <main className="mx-auto max-w-4xl px-6 py-10">{children}</main>
