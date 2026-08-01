@@ -1,5 +1,6 @@
 import type { ValidationWarning } from '@reelbridge/shared';
 import { useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { apiPost } from '../api/client.js';
 import {
   fetchMediaConstraints,
@@ -364,9 +365,19 @@ export function BatchUpload() {
       )}
 
       {uploadedCount > 0 && (
-        <p role="status" className="mt-6 text-sm font-medium text-emerald-600">
-          {uploadedCount} video{uploadedCount === 1 ? '' : 's'} ready.
-        </p>
+        <div className="mt-6 flex items-center gap-4">
+          <p role="status" className="text-sm font-medium text-emerald-600">
+            {uploadedCount} video{uploadedCount === 1 ? '' : 's'} ready.
+          </p>
+          {batchId && (
+            <Link
+              to={`/batches/${batchId}/targets`}
+              className="text-sm font-medium text-brand-600 hover:underline"
+            >
+              Continue to targeting →
+            </Link>
+          )}
+        </div>
       )}
     </div>
   );

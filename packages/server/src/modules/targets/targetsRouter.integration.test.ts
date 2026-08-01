@@ -100,6 +100,55 @@ async function createUserWithTarget(email: string) {
   return { user, target };
 }
 
+describe.skipIf(!ready)('GET /api/targets', () => {
+  const app = createApp();
+
+  afterAll(async () => {
+    const db = getDb();
+    const testUsers = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(like(users.email, `${TEST_EMAIL_PREFIX}%`));
+    const userIds = testUsers.map((u) => u.id);
+    if (userIds.length > 0) {
+      await db.delete(publishTargets).where(inArray(publishTargets.userId, userIds));
+      await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    // Pool is closed once, in the last describe block's afterAll below — it's
+    // a process-wide singleton shared across both describes in this file.
+  });
+
+  it("lists only the caller's own targets, with platform capabilities merged in", async () => {
+    const { user, target } = await createUserWithTarget(
+      `${TEST_EMAIL_PREFIX}list-${Date.now()}@example.com`,
+    );
+    const { target: otherTarget } = await createUserWithTarget(
+      `${TEST_EMAIL_PREFIX}list-other-${Date.now()}@example.com`,
+    );
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const res = await request(app).get('/api/targets').set('Cookie', cookie);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe(target.id);
+    expect(res.body[0].platform).toBe('facebook_page');
+    expect(res.body[0].capabilities).toMatchObject({
+      nativeScheduling: true,
+      uploadMechanism: 'binary',
+    });
+    // No secrets, and no other user's targets leaked.
+    expect(res.body[0]).not.toHaveProperty('accessTokenCiphertext');
+    expect(res.body.some((t: { id: string }) => t.id === otherTarget.id)).toBe(false);
+  });
+
+  it('requires authentication', async () => {
+    const res = await request(app).get('/api/targets');
+    expect(res.status).toBe(401);
+  });
+});
+
 describe.skipIf(!ready)('POST /api/targets/:id/revalidate', () => {
   const app = createApp();
 
