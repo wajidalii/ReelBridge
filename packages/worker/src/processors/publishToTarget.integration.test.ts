@@ -341,6 +341,255 @@ describe.skipIf(!ready)('processPublishToTarget (Facebook)', () => {
   });
 });
 
+describe.skipIf(!ready)('processPublishToTarget (Instagram)', () => {
+  afterAll(async () => {
+    const db = getDb();
+    const testUsers = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(like(users.email, `${TEST_EMAIL_PREFIX}%`));
+    const userIds = testUsers.map((u) => u.id);
+    if (userIds.length > 0) {
+      const batches = await db
+        .select({ id: postBatches.id })
+        .from(postBatches)
+        .where(inArray(postBatches.userId, userIds));
+      const batchIds = batches.map((b) => b.id);
+      if (batchIds.length > 0) {
+        const items = await db
+          .select({ id: postItems.id })
+          .from(postItems)
+          .where(inArray(postItems.batchId, batchIds));
+        const itemIds = items.map((i) => i.id);
+        if (itemIds.length > 0) {
+          await db.delete(postTargets).where(inArray(postTargets.postItemId, itemIds));
+          await db.delete(postItems).where(inArray(postItems.id, itemIds));
+        }
+        await db.delete(postBatches).where(inArray(postBatches.id, batchIds));
+      }
+      await db.delete(mediaAssets).where(inArray(mediaAssets.userId, userIds));
+      await db.delete(publishTargets).where(inArray(publishTargets.userId, userIds));
+      await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    // Pool close deferred to the last describe block's afterAll — closing it
+    // here would break the describe blocks below that still need it, since
+    // describe blocks in this file run sequentially.
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('resolves a signed URL and the linked Facebook Page token, publishes via the container flow, and backfills the permalink', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}ig-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'facebook',
+        externalAccountId: 'me',
+        displayName: 'Facebook',
+        accessTokenCiphertext: 'x',
+        accessTokenIv: 'x',
+        accessTokenTag: 'x',
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    const encryptedPageToken = encrypt('linked-page-access-token');
+    const [fbTarget] = await db
+      .insert(publishTargets)
+      .values({
+        userId: user.id,
+        platformConnectionId: connection.id,
+        platform: 'facebook_page',
+        externalId: 'page-linked-to-ig',
+        displayName: 'Linked Page',
+        accessTokenCiphertext: encryptedPageToken.ciphertext,
+        accessTokenIv: encryptedPageToken.iv,
+        accessTokenTag: encryptedPageToken.tag,
+      })
+      .returning();
+    if (!fbTarget) throw new Error('failed to insert test facebook target');
+
+    // instagram_business publish_targets rows stay tokenless in production —
+    // upsertGoogleConnection.ts/shared/instagramTargets.ts — and carry the
+    // linked Page's id in metadata instead.
+    const [igTarget] = await db
+      .insert(publishTargets)
+      .values({
+        userId: user.id,
+        platformConnectionId: connection.id,
+        platform: 'instagram_business',
+        externalId: 'ig-user-processor-test',
+        displayName: 'Processor Test IG Account',
+        tokenSource: 'oauth',
+        metadata: { linkedFacebookPageId: 'page-linked-to-ig' },
+      })
+      .returning();
+    if (!igTarget) throw new Error('failed to insert test instagram target');
+
+    const storageKey = `${user.id}/processor-test-ig.mp4`;
+    const videoBytes = Buffer.from('fake-video-bytes-for-instagram-processor-test');
+    await createStorageAdapterFromEnv().save(storageKey, videoBytes, 'video/mp4');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey,
+        fileSizeBytes: videoBytes.length,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const [batch] = await db
+      .insert(postBatches)
+      .values({ userId: user.id, name: 'Instagram processor test batch' })
+      .returning();
+    if (!batch) throw new Error('failed to insert test batch');
+
+    const [item] = await db
+      .insert(postItems)
+      .values({
+        batchId: batch.id,
+        mediaAssetId: media.id,
+        defaultCaption: 'Instagram processor test caption',
+      })
+      .returning();
+    if (!item) throw new Error('failed to insert test post item');
+
+    const [postTarget] = await db
+      .insert(postTargets)
+      .values({ postItemId: item.id, publishTargetId: igTarget.id, status: 'pending' })
+      .returning();
+    if (!postTarget) throw new Error('failed to insert test post target');
+
+    let sawSignedVideoUrl = false;
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const urlStr = input.toString();
+      if (urlStr.includes('/ig-user-processor-test/media') && !urlStr.includes('media_publish')) {
+        const params = init?.body as URLSearchParams;
+        expect(params.get('access_token')).toBe('linked-page-access-token');
+        // Real signed URLs from the local MinIO adapter are long, host the
+        // storage key, and carry query-string auth params — just confirm
+        // it's not the raw storage key or an empty value.
+        expect(params.get('video_url')).toContain(storageKey);
+        sawSignedVideoUrl = true;
+        return jsonResponse({ id: 'container-processor-test' });
+      }
+      if (urlStr.includes('/container-processor-test')) {
+        return jsonResponse({ status_code: 'FINISHED' });
+      }
+      if (urlStr.includes('/ig-user-processor-test/media_publish')) {
+        return jsonResponse({ id: 'processor-test-ig-media-id' });
+      }
+      if (urlStr.includes('/processor-test-ig-media-id')) {
+        return jsonResponse({ permalink: 'https://instagram.com/reel/processor-test/' });
+      }
+      throw new Error(`Unexpected fetch call: ${urlStr}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const job = {
+      data: { postTargetId: postTarget.id } as PublishToTargetJobData,
+    } as Job<PublishToTargetJobData>;
+    await processPublishToTarget(job);
+
+    expect(sawSignedVideoUrl).toBe(true);
+    const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
+    expect(updated?.status).toBe('published');
+    expect(updated?.platformPostId).toBe('processor-test-ig-media-id');
+    expect(updated?.permalinkUrl).toBe('https://instagram.com/reel/processor-test/');
+    expect(updated?.publishedAt).not.toBeNull();
+    expect(updated?.lastError).toBeNull();
+  });
+
+  it('marks the post_target failed when the linked Facebook Page has no access token', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}ig-nopage-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'facebook',
+        externalAccountId: 'me',
+        displayName: 'Facebook',
+        accessTokenCiphertext: 'x',
+        accessTokenIv: 'x',
+        accessTokenTag: 'x',
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    // No facebook_page publish_targets row inserted at all — simulates a
+    // linked page whose target row is missing/deactivated.
+    const [igTarget] = await db
+      .insert(publishTargets)
+      .values({
+        userId: user.id,
+        platformConnectionId: connection.id,
+        platform: 'instagram_business',
+        externalId: 'ig-user-nopage-test',
+        displayName: 'No Page Test IG Account',
+        tokenSource: 'oauth',
+        metadata: { linkedFacebookPageId: 'nonexistent-page' },
+      })
+      .returning();
+    if (!igTarget) throw new Error('failed to insert test instagram target');
+
+    const storageKey = `${user.id}/processor-nopage-ig.mp4`;
+    const videoBytes = Buffer.from('fake-video-bytes-for-nopage-test');
+    await createStorageAdapterFromEnv().save(storageKey, videoBytes, 'video/mp4');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey,
+        fileSizeBytes: videoBytes.length,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const [batch] = await db
+      .insert(postBatches)
+      .values({ userId: user.id, name: 'No page test batch' })
+      .returning();
+    if (!batch) throw new Error('failed to insert test batch');
+
+    const [item] = await db
+      .insert(postItems)
+      .values({ batchId: batch.id, mediaAssetId: media.id, defaultCaption: 'No page caption' })
+      .returning();
+    if (!item) throw new Error('failed to insert test post item');
+
+    const [postTarget] = await db
+      .insert(postTargets)
+      .values({ postItemId: item.id, publishTargetId: igTarget.id, status: 'pending' })
+      .returning();
+    if (!postTarget) throw new Error('failed to insert test post target');
+
+    const job = {
+      data: { postTargetId: postTarget.id } as PublishToTargetJobData,
+    } as Job<PublishToTargetJobData>;
+    await expect(processPublishToTarget(job)).rejects.toThrow(/missing an access token/);
+
+    const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
+    expect(updated?.status).toBe('failed');
+  });
+});
+
 describe.skipIf(!ready)('processPublishToTarget (YouTube)', () => {
   afterAll(async () => {
     const db = getDb();
