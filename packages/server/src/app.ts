@@ -11,6 +11,7 @@ import { batchesRouter } from './modules/batches/batchesRouter.js';
 import { configRouter } from './modules/config/configRouter.js';
 import { facebookConnectionsRouter } from './modules/connections/facebookRouter.js';
 import { facebookTargetsRouter } from './modules/connections/facebookTargetsRouter.js';
+import { googleConnectionsRouter } from './modules/connections/googleRouter.js';
 import { mediaRouter } from './modules/media/mediaRouter.js';
 import { ownershipErrorHandler } from './modules/ownership/middleware.js';
 import { targetsRouter } from './modules/targets/targetsRouter.js';
@@ -31,6 +32,7 @@ export function createApp() {
   app.use('/api/config', configRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/connections/facebook', facebookConnectionsRouter);
+  app.use('/api/connections/google', googleConnectionsRouter);
   app.use('/api/targets/facebook', facebookTargetsRouter);
   app.use('/api/targets', targetsRouter);
   app.use('/api/media', mediaRouter);

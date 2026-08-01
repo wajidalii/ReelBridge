@@ -8,9 +8,10 @@ export interface OAuthStatePayload {
    * What the user actually clicked ("Connect Facebook" vs "Connect Instagram") —
    * both drive the same Facebook Login for Business flow, so this rides along in
    * the signed state to survive the redirect round-trip and let the callback tell
-   * the client which success/error copy to show.
+   * the client which success/error copy to show. 'youtube' is the sole intent
+   * for the Google flow (Google OAuth only ever leads to YouTube discovery).
    */
-  intent: 'facebook' | 'instagram';
+  intent: 'facebook' | 'instagram' | 'youtube';
 }
 
 function loadJwtSecret(): string {
