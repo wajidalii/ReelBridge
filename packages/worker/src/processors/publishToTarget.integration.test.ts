@@ -5,16 +5,20 @@ import {
   createStorageAdapterFromEnv,
   encrypt,
   getDb,
+  getOrCreateWorker,
   getPool,
+  getQueue,
   mediaAssets,
   platformConnections,
   postBatches,
   postItems,
   postTargets,
   publishTargets,
+  publishToTargetQueueName,
   users,
 } from '@reelbridge/shared';
 import { eq, inArray, like } from 'drizzle-orm';
+import { Redis } from 'ioredis';
 import { Client } from 'pg';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
@@ -66,9 +70,29 @@ async function isStorageReachable(): Promise<boolean> {
   }
 }
 
-const [dbReachable, storageReachable] = await Promise.all([
+async function isRedisReachable(): Promise<boolean> {
+  const url = process.env.REDIS_URL;
+  if (!url) return false;
+  const client = new Redis(url, {
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+    lazyConnect: true,
+  });
+  try {
+    await client.connect();
+    await client.ping();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    client.disconnect();
+  }
+}
+
+const [dbReachable, storageReachable, redisReachable] = await Promise.all([
   isDatabaseReachable(),
   isStorageReachable(),
+  isRedisReachable(),
 ]);
 const ready = dbReachable && storageReachable;
 
@@ -348,7 +372,9 @@ describe.skipIf(!ready)('processPublishToTarget (YouTube)', () => {
       await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
       await db.delete(users).where(inArray(users.id, userIds));
     }
-    await getPool().end();
+    // Pool close deferred to the last describe block's afterAll (below) —
+    // closing it here would break the quota-backoff describe block that
+    // still needs it, since describe blocks in this file run sequentially.
   });
 
   afterEach(() => {
@@ -551,4 +577,183 @@ describe.skipIf(!ready)('processPublishToTarget (YouTube)', () => {
     const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
     expect(updated?.status).toBe('failed');
   });
+});
+
+describe.skipIf(!ready || !redisReachable)('processPublishToTarget (YouTube quota backoff)', () => {
+  afterAll(async () => {
+    const db = getDb();
+    const testUsers = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(like(users.email, `${TEST_EMAIL_PREFIX}%`));
+    const userIds = testUsers.map((u) => u.id);
+    if (userIds.length > 0) {
+      const batches = await db
+        .select({ id: postBatches.id })
+        .from(postBatches)
+        .where(inArray(postBatches.userId, userIds));
+      const batchIds = batches.map((b) => b.id);
+      if (batchIds.length > 0) {
+        const items = await db
+          .select({ id: postItems.id })
+          .from(postItems)
+          .where(inArray(postItems.batchId, batchIds));
+        const itemIds = items.map((i) => i.id);
+        if (itemIds.length > 0) {
+          await db.delete(postTargets).where(inArray(postTargets.postItemId, itemIds));
+          await db.delete(postItems).where(inArray(postItems.id, itemIds));
+        }
+        await db.delete(postBatches).where(inArray(postBatches.id, batchIds));
+      }
+      await db.delete(mediaAssets).where(inArray(mediaAssets.userId, userIds));
+      await db.delete(publishTargets).where(inArray(publishTargets.userId, userIds));
+      await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    await getPool().end();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('backs off a quota-exceeded upload as a delayed job instead of marking it permanently failed', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}yt-quota-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+
+    const encryptedAccessToken = encrypt('google-access-token');
+    const encryptedRefreshToken = encrypt('google-refresh-token');
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'google',
+        externalAccountId: 'me',
+        displayName: 'Google',
+        accessTokenCiphertext: encryptedAccessToken.ciphertext,
+        accessTokenIv: encryptedAccessToken.iv,
+        accessTokenTag: encryptedAccessToken.tag,
+        refreshTokenCiphertext: encryptedRefreshToken.ciphertext,
+        refreshTokenIv: encryptedRefreshToken.iv,
+        refreshTokenTag: encryptedRefreshToken.tag,
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    const [target] = await db
+      .insert(publishTargets)
+      .values({
+        userId: user.id,
+        platformConnectionId: connection.id,
+        platform: 'youtube_channel',
+        externalId: `channel-quota-${Date.now()}`,
+        displayName: 'Quota Test Channel',
+        tokenSource: 'oauth',
+      })
+      .returning();
+    if (!target) throw new Error('failed to insert test target');
+
+    const storageKey = `${user.id}/processor-quota-test.mp4`;
+    const videoBytes = Buffer.from('fake-video-bytes-for-quota-test');
+    await createStorageAdapterFromEnv().save(storageKey, videoBytes, 'video/mp4');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey,
+        fileSizeBytes: videoBytes.length,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const [batch] = await db
+      .insert(postBatches)
+      .values({ userId: user.id, name: 'Quota test batch' })
+      .returning();
+    if (!batch) throw new Error('failed to insert test batch');
+
+    const [item] = await db
+      .insert(postItems)
+      .values({ batchId: batch.id, mediaAssetId: media.id, defaultCaption: 'Quota test caption' })
+      .returning();
+    if (!item) throw new Error('failed to insert test post item');
+
+    const [postTarget] = await db
+      .insert(postTargets)
+      .values({
+        postItemId: item.id,
+        publishTargetId: target.id,
+        status: 'pending',
+        attemptCount: 2,
+      })
+      .returning();
+    if (!postTarget) throw new Error('failed to insert test post target');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const urlStr = input.toString();
+        if (urlStr === 'https://oauth2.googleapis.com/token') {
+          return jsonResponse({ access_token: 'fresh-access-token', expires_in: 3600 });
+        }
+        if (urlStr.includes('uploadType=resumable')) {
+          return jsonResponse(
+            {
+              error: {
+                errors: [
+                  { reason: 'quotaExceeded', message: 'The user has exceeded their quota.' },
+                ],
+              },
+            },
+            403,
+          );
+        }
+        throw new Error(`Unexpected fetch call: ${urlStr}`);
+      }),
+    );
+
+    // Runs through a real Queue+Worker (not a bare job object) — moveToDelayed
+    // needs a genuinely active job holding BullMQ's lock token, which only a
+    // live Worker invocation provides.
+    const queueName = publishToTargetQueueName('youtube_channel', target.externalId);
+    const queue = getQueue<PublishToTargetJobData>(queueName);
+    const worker = getOrCreateWorker<PublishToTargetJobData>(queueName, (job, token) =>
+      processPublishToTarget(job, token),
+    );
+
+    try {
+      await queue.add(
+        'publish',
+        { postTargetId: postTarget.id },
+        { jobId: postTarget.id, attempts: 5 },
+      );
+
+      await vi.waitFor(
+        async () => {
+          const job = await queue.getJob(postTarget.id);
+          expect(await job?.getState()).toBe('delayed');
+        },
+        { timeout: 5000 },
+      );
+
+      const delayedJob = await queue.getJob(postTarget.id);
+      expect(delayedJob?.attemptsMade).toBe(0);
+
+      const [updated] = await db
+        .select()
+        .from(postTargets)
+        .where(eq(postTargets.id, postTarget.id));
+      expect(updated?.status).toBe('queued');
+      expect(updated?.lastError).toMatch(/quota/i);
+      // Not incremented — a quota block isn't a failed attempt at this item.
+      expect(updated?.attemptCount).toBe(2);
+    } finally {
+      await worker.close();
+      await queue.obliterate({ force: true });
+    }
+  }, 10000);
 });

@@ -14,11 +14,36 @@ export class GoogleApiError extends Error {
   }
 }
 
+const QUOTA_ERROR_REASONS = new Set(['quotaExceeded', 'dailyLimitExceeded', 'rateLimitExceeded']);
+
+/**
+ * `videos.insert` has its own dedicated daily quota bucket — 100 calls/day,
+ * 1 unit each — separate from the shared 10,000-unit pool used by
+ * reads/search (verified against Google's public quota-cost documentation,
+ * https://developers.google.com/youtube/v3/determine_quota_cost, 2026-08-01;
+ * TDD.md §5 risk 4 flags this as a fast-moving number that should be
+ * re-verified against the project's own live Cloud Console quota dashboard
+ * at deploy time too, not just public docs). Google reports exhausting it as
+ * HTTP 403 with an `errors[].reason` of `quotaExceeded` (or the related
+ * `dailyLimitExceeded`/`rateLimitExceeded`) rather than a distinct status
+ * code, so detecting it means inspecting the error body shape.
+ */
+export function isQuotaExceededError(error: unknown): boolean {
+  if (!(error instanceof GoogleApiError) || error.status !== 403) return false;
+  const body = error.body as { error?: { errors?: Array<{ reason?: string }> } } | undefined;
+  const reasons = body?.error?.errors?.map((e) => e.reason) ?? [];
+  return reasons.some((reason) => reason !== undefined && QUOTA_ERROR_REASONS.has(reason));
+}
+
 export async function googlePost<T>(url: string, params: Record<string, string>): Promise<T> {
   const res = await fetch(url, { method: 'POST', body: new URLSearchParams(params) });
   const body: unknown = await res.json();
   if (!res.ok) {
-    throw new GoogleApiError(`Google API POST ${url} failed with status ${res.status}`, res.status, body);
+    throw new GoogleApiError(
+      `Google API POST ${url} failed with status ${res.status}`,
+      res.status,
+      body,
+    );
   }
   return body as T;
 }
@@ -39,7 +64,11 @@ export async function googleGet<T>(
   const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   const body: unknown = await res.json();
   if (!res.ok) {
-    throw new GoogleApiError(`YouTube API GET ${path} failed with status ${res.status}`, res.status, body);
+    throw new GoogleApiError(
+      `YouTube API GET ${path} failed with status ${res.status}`,
+      res.status,
+      body,
+    );
   }
   return body as T;
 }

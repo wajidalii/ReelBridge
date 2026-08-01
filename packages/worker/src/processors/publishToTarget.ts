@@ -1,5 +1,5 @@
 import { facebookPageAdapter } from '@reelbridge/platform-facebook';
-import { youtubeChannelAdapter } from '@reelbridge/platform-youtube';
+import { isQuotaExceededError, youtubeChannelAdapter } from '@reelbridge/platform-youtube';
 import type { PlatformAdapter, PublishToTargetJobData } from '@reelbridge/shared';
 import {
   createStorageAdapterFromEnv,
@@ -11,7 +11,7 @@ import {
   postTargets,
   publishTargets,
 } from '@reelbridge/shared';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { loadGoogleOAuthConfig } from '../googleOAuthConfig.js';
 
@@ -19,6 +19,17 @@ const ADAPTERS_BY_PLATFORM: Partial<Record<string, PlatformAdapter>> = {
   facebook_page: facebookPageAdapter,
   youtube_channel: youtubeChannelAdapter,
 };
+
+// YouTube's videos.insert bucket resets daily (Google's public quota-cost
+// docs don't publish the exact reset instant per project, and re-verifying
+// that against this project's own Cloud Console dashboard is a deploy-time
+// task, not something this code can check). An hour is a conservative
+// middle ground: short enough that a mid-day quota bump or a reset earlier
+// than expected isn't sat on for near a full day, long enough that repeated
+// attempts don't hammer an exhausted bucket every few seconds the way the
+// default exponential backoff (packages/shared/src/queues/publishToTarget.ts)
+// would.
+const YOUTUBE_QUOTA_BACKOFF_MS = 60 * 60 * 1000;
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -96,8 +107,16 @@ function buildTargetMetadata(
  * the "worker does the real publish work, never the API" boundary in practice.
  * facebook_page and youtube_channel are wired; Instagram lands in its own
  * milestone and will register here the same way.
+ *
+ * `token` is BullMQ's lock token for this job, passed automatically by the
+ * Worker that invokes this processor — needed to hand the job back to
+ * `moveToDelayed` on a quota-exceeded YouTube upload (see below) without
+ * losing the lock BullMQ requires for that call.
  */
-export async function processPublishToTarget(job: Job<PublishToTargetJobData>): Promise<void> {
+export async function processPublishToTarget(
+  job: Job<PublishToTargetJobData>,
+  token?: string,
+): Promise<void> {
   const db = getDb();
   const { postTargetId } = job.data;
 
@@ -176,6 +195,35 @@ export async function processPublishToTarget(job: Job<PublishToTargetJobData>): 
       })
       .where(eq(postTargets.id, postTargetId));
   } catch (error) {
+    if (isQuotaExceededError(error)) {
+      // Exhausting YouTube's 100/day videos.insert bucket isn't a per-item
+      // failure — the video and caption are fine, the *account* is just out
+      // of room until the bucket resets. Marking this row 'failed' (and
+      // spending one of its limited BullMQ attempts on a backoff measured in
+      // seconds) would be misleading and wasteful, so instead: log it as a
+      // distinct, observable event; leave post_targets 'queued' with an
+      // explanatory last_error rather than 'failed'; and hand the job back
+      // to BullMQ as intentionally delayed (moveToDelayed + DelayedError,
+      // not a thrown failure) so it doesn't consume one of the job's normal
+      // retry attempts.
+      console.warn('[youtube-quota-exceeded]', {
+        postTargetId,
+        publishTargetId: publishTarget.id,
+        retryAt: new Date(Date.now() + YOUTUBE_QUOTA_BACKOFF_MS).toISOString(),
+      });
+      await db
+        .update(postTargets)
+        .set({
+          status: 'queued',
+          lastError:
+            'YouTube daily upload quota exceeded — will retry automatically once it resets.',
+          updatedAt: new Date(),
+        })
+        .where(eq(postTargets.id, postTargetId));
+      await job.moveToDelayed(Date.now() + YOUTUBE_QUOTA_BACKOFF_MS, token);
+      throw new DelayedError();
+    }
+
     await db
       .update(postTargets)
       .set({
