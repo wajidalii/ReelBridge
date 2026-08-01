@@ -403,4 +403,171 @@ describe.skipIf(!ready)('POST /api/batches/:id/publish', () => {
       .set('Cookie', otherCookie);
     expect(res.status).toBe(404);
   });
+
+  // Instagram has no platform-side scheduling (TDD.md §1.2) — a container
+  // simply expires 24h after creation. Enqueuing the real publish job at
+  // /publish time for a future scheduledAt would run it immediately instead
+  // of at the intended time (adapter.publish() ignores scheduledAt), which is
+  // exactly the bug issue #34 fixes: the row must sit in
+  // awaiting_app_managed_publish, untouched by BullMQ, until the due-job
+  // sweep (cron/appManagedPublishSweep.ts) picks it up.
+  it('defers a future-scheduled Instagram row to awaiting_app_managed_publish instead of enqueuing it', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}ig-future-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'facebook',
+        externalAccountId: 'me',
+        displayName: 'Facebook',
+        accessTokenCiphertext: 'x',
+        accessTokenIv: 'x',
+        accessTokenTag: 'x',
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    const igTarget = await createTarget(user.id, connection.id, 'instagram_business');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey: `${user.id}/clip.mp4`,
+        fileSizeBytes: 1000,
+        durationSeconds: 30,
+        width: 1080,
+        height: 1920,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', cookie)
+      .send({ name: 'Instagram future publish batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemRes = await request(app)
+      .post(`/api/batches/${batchId}/items`)
+      .set('Cookie', cookie)
+      .send({ media_asset_id: media.id, default_caption: 'Default caption' });
+    const itemId = itemRes.body.id as string;
+
+    const futureScheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const targetRes = await request(app)
+      .post(`/api/batches/${batchId}/items/${itemId}/targets`)
+      .set('Cookie', cookie)
+      .send({
+        targets: [{ publish_target_id: igTarget.id, scheduled_at: futureScheduledAt }],
+      });
+    const postTargetId = targetRes.body.created[0].id as string;
+
+    const publishRes = await request(app)
+      .post(`/api/batches/${batchId}/publish`)
+      .set('Cookie', cookie);
+
+    expect(publishRes.status).toBe(200);
+    expect(publishRes.body).toEqual({
+      batchId,
+      queuedCount: 1,
+      postTargetIds: [postTargetId],
+      failedPostTargetIds: [],
+    });
+
+    const queue = getQueue<{ postTargetId: string }>(
+      publishToTargetQueueName('instagram_business', igTarget.externalId),
+    );
+    const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
+    expect(jobs.some((job) => job.data.postTargetId === postTargetId)).toBe(false);
+
+    const [updatedTarget] = await db
+      .select()
+      .from(postTargets)
+      .where(eq(postTargets.id, postTargetId));
+    expect(updatedTarget?.status).toBe('awaiting_app_managed_publish');
+  });
+
+  it('enqueues an Instagram row immediately when it has no scheduledAt (post now)', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}ig-now-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'facebook',
+        externalAccountId: 'me',
+        displayName: 'Facebook',
+        accessTokenCiphertext: 'x',
+        accessTokenIv: 'x',
+        accessTokenTag: 'x',
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    const igTarget = await createTarget(user.id, connection.id, 'instagram_business');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey: `${user.id}/clip.mp4`,
+        fileSizeBytes: 1000,
+        durationSeconds: 30,
+        width: 1080,
+        height: 1920,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', cookie)
+      .send({ name: 'Instagram now publish batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemRes = await request(app)
+      .post(`/api/batches/${batchId}/items`)
+      .set('Cookie', cookie)
+      .send({ media_asset_id: media.id, default_caption: 'Default caption' });
+    const itemId = itemRes.body.id as string;
+
+    const targetRes = await request(app)
+      .post(`/api/batches/${batchId}/items/${itemId}/targets`)
+      .set('Cookie', cookie)
+      .send({ targets: [{ publish_target_id: igTarget.id }] });
+    const postTargetId = targetRes.body.created[0].id as string;
+
+    const publishRes = await request(app)
+      .post(`/api/batches/${batchId}/publish`)
+      .set('Cookie', cookie);
+
+    expect(publishRes.status).toBe(200);
+    expect(publishRes.body.queuedCount).toBe(1);
+
+    const queue = getQueue<{ postTargetId: string }>(
+      publishToTargetQueueName('instagram_business', igTarget.externalId),
+    );
+    const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
+    const matchingJobs = jobs.filter((job) => job.data.postTargetId === postTargetId);
+    expect(matchingJobs).toHaveLength(1);
+    await Promise.all(matchingJobs.map((job) => job.remove()));
+
+    const [updatedTarget] = await db
+      .select()
+      .from(postTargets)
+      .where(eq(postTargets.id, postTargetId));
+    expect(updatedTarget?.status).toBe('queued');
+  });
 });
