@@ -192,6 +192,7 @@ describe.skipIf(!ready)('POST /api/batches/:id/publish', () => {
       batchId,
       queuedCount: 1,
       postTargetIds: [postTargetId],
+      failedPostTargetIds: [],
     });
 
     const queue = getQueue<{ postTargetId: string }>(
@@ -210,6 +211,84 @@ describe.skipIf(!ready)('POST /api/batches/:id/publish', () => {
 
     const [updatedBatch] = await db.select().from(postBatches).where(eq(postBatches.id, batchId));
     expect(updatedBatch?.status).toBe('active');
+  });
+
+  it('calling publish a second time does not re-enqueue an already-queued row', async () => {
+    const db = getDb();
+    const email = `${TEST_EMAIL_PREFIX}double-${Date.now()}@example.com`;
+    const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+    if (!user) throw new Error('failed to insert test user');
+    const cookie = `reelbridge_access_token=${signAccessToken(user.id)}`;
+
+    const [connection] = await db
+      .insert(platformConnections)
+      .values({
+        userId: user.id,
+        platform: 'facebook',
+        externalAccountId: 'me',
+        displayName: 'Facebook',
+        accessTokenCiphertext: 'x',
+        accessTokenIv: 'x',
+        accessTokenTag: 'x',
+      })
+      .returning();
+    if (!connection) throw new Error('failed to insert test connection');
+
+    const fbTarget = await createTarget(user.id, connection.id, 'facebook_page');
+
+    const [media] = await db
+      .insert(mediaAssets)
+      .values({
+        userId: user.id,
+        originalFilename: 'clip.mp4',
+        storageKey: `${user.id}/clip.mp4`,
+        fileSizeBytes: 1000,
+        durationSeconds: 30,
+        width: 1080,
+        height: 1920,
+      })
+      .returning();
+    if (!media) throw new Error('failed to insert test media asset');
+
+    const batchRes = await request(app)
+      .post('/api/batches')
+      .set('Cookie', cookie)
+      .send({ name: 'Double publish batch' });
+    const batchId = batchRes.body.id as string;
+
+    const itemRes = await request(app)
+      .post(`/api/batches/${batchId}/items`)
+      .set('Cookie', cookie)
+      .send({ media_asset_id: media.id, default_caption: 'Default caption' });
+    const itemId = itemRes.body.id as string;
+
+    const targetRes = await request(app)
+      .post(`/api/batches/${batchId}/items/${itemId}/targets`)
+      .set('Cookie', cookie)
+      .send({ targets: [{ publish_target_id: fbTarget.id }] });
+    const postTargetId = targetRes.body.created[0].id as string;
+
+    const firstPublish = await request(app)
+      .post(`/api/batches/${batchId}/publish`)
+      .set('Cookie', cookie);
+    expect(firstPublish.status).toBe(200);
+    expect(firstPublish.body.queuedCount).toBe(1);
+
+    // A second call — a double-click, a client retry, a second tab — sees the
+    // row as no longer 'pending' and must not enqueue a duplicate job.
+    const secondPublish = await request(app)
+      .post(`/api/batches/${batchId}/publish`)
+      .set('Cookie', cookie);
+    expect(secondPublish.status).toBe(400);
+    expect(secondPublish.body).toEqual({ error: 'Nothing to publish' });
+
+    const queue = getQueue<{ postTargetId: string }>(
+      publishToTargetQueueName('facebook_page', fbTarget.externalId),
+    );
+    const jobs = await queue.getJobs(['waiting', 'delayed', 'active', 'completed', 'failed']);
+    const matchingJobs = jobs.filter((job) => job.data.postTargetId === postTargetId);
+    expect(matchingJobs).toHaveLength(1);
+    await Promise.all(matchingJobs.map((job) => job.remove()));
   });
 
   it('rejects with 409 and enqueues nothing when a row is blocking (inactive target)', async () => {

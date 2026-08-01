@@ -356,6 +356,10 @@ interface PreviewRow {
   schedulingMode: 'native_scheduled' | 'awaiting_app_managed_publish' | null;
   warnings: PreviewWarning[];
   blocking: boolean;
+  /** The underlying post_targets row's status — lets /publish only act on rows
+   *  that haven't already been queued/published, so calling it twice (or a
+   *  client retry) doesn't re-enqueue work that's already in flight. */
+  status: string;
 }
 
 interface PreviewResult {
@@ -475,6 +479,7 @@ async function buildPreviewRows(db: Database, batchId: string): Promise<PreviewR
           : null,
         warnings,
         blocking: warnings.some((warning) => warning.severity === 'blocking'),
+        status: target.status,
       });
     }
   }
@@ -498,11 +503,25 @@ batchesRouter.get(
   },
 );
 
-// Enqueues every resolved (post_item, post_target) row for publishing. All-or-
-// nothing: if any row is still blocking (see buildPreviewRows above), nothing
-// is enqueued — matches design.md's "Schedule batch is disabled until blocking
-// issues are resolved". Real publishing happens asynchronously in the worker;
-// this only queues the jobs and marks rows/batch as in-flight.
+// Enqueues every still-pending resolved (post_item, post_target) row for
+// publishing. All-or-nothing on blocking: if any *pending* row is still
+// blocking (see buildPreviewRows above), nothing is enqueued — matches
+// design.md's "Schedule batch is disabled until blocking issues are
+// resolved". Rows that were already queued/published/failed by an earlier
+// call are left alone rather than re-resolved against the blocking gate, so
+// they can't wedge a batch that otherwise has new pending work.
+//
+// Only `status: 'pending'` rows are ever touched here — this, combined with
+// enqueuePublishToTarget pinning its BullMQ jobId to postTargetId, is what
+// makes calling this endpoint twice (a double-click, a client retry, two
+// tabs) safe: a second call sees the first call's rows as no longer pending
+// and skips them instead of re-enqueueing a duplicate publish.
+//
+// Real publishing happens asynchronously in the worker; this only queues the
+// jobs and marks rows/batch as in-flight. The batch is marked 'active' before
+// the per-row loop (not after) so a mid-loop failure still leaves the batch
+// correctly reflecting "publishing has started" rather than silently
+// reverting to its pre-publish status.
 batchesRouter.post(
   '/:id/publish',
   requireAuth,
@@ -517,14 +536,15 @@ batchesRouter.post(
       return;
     }
 
-    const { rows, publishTargetById } = preview;
+    const { publishTargetById } = preview;
+    const pendingRows = preview.rows.filter((row) => row.status === 'pending');
 
-    if (rows.length === 0) {
+    if (pendingRows.length === 0) {
       res.status(400).json({ error: 'Nothing to publish' });
       return;
     }
 
-    const blockingCount = rows.filter((row) => row.blocking).length;
+    const blockingCount = pendingRows.filter((row) => row.blocking).length;
     if (blockingCount > 0) {
       res.status(409).json({
         error: 'Resolve blocking issues before scheduling this batch.',
@@ -533,8 +553,11 @@ batchesRouter.post(
       return;
     }
 
-    const postTargetIds: string[] = [];
-    for (const row of rows) {
+    await db.update(postBatches).set({ status: 'active' }).where(eq(postBatches.id, batchId));
+
+    const queuedPostTargetIds: string[] = [];
+    const failedPostTargetIds: string[] = [];
+    for (const row of pendingRows) {
       const publishTarget = publishTargetById.get(row.publishTargetId);
       // Unreachable in practice: a missing/inactive publish target would have
       // set row.blocking above, and we already returned 409 in that case.
@@ -542,18 +565,27 @@ batchesRouter.post(
         continue;
       }
 
-      await enqueuePublishToTarget(publishTarget.platform, publishTarget.externalId, {
-        postTargetId: row.id,
-      });
-      await db
-        .update(postTargets)
-        .set({ status: 'queued', updatedAt: new Date() })
-        .where(eq(postTargets.id, row.id));
-      postTargetIds.push(row.id);
+      try {
+        await enqueuePublishToTarget(publishTarget.platform, publishTarget.externalId, {
+          postTargetId: row.id,
+        });
+        await db
+          .update(postTargets)
+          .set({ status: 'queued', updatedAt: new Date() })
+          .where(eq(postTargets.id, row.id));
+        queuedPostTargetIds.push(row.id);
+      } catch {
+        // Left as 'pending': a later retry of this endpoint will pick this
+        // row back up instead of the request failing the whole batch.
+        failedPostTargetIds.push(row.id);
+      }
     }
 
-    await db.update(postBatches).set({ status: 'active' }).where(eq(postBatches.id, batchId));
-
-    res.json({ batchId, queuedCount: postTargetIds.length, postTargetIds });
+    res.json({
+      batchId,
+      queuedCount: queuedPostTargetIds.length,
+      postTargetIds: queuedPostTargetIds,
+      failedPostTargetIds,
+    });
   },
 );

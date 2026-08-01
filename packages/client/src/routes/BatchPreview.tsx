@@ -19,6 +19,15 @@ function scheduledAtLabel(row: PreviewRow): string {
   return row.scheduledAt ? new Date(row.scheduledAt).toLocaleString() : 'Publishing now';
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  queued: 'Queued',
+  uploading: 'Uploading',
+  native_scheduled: 'Scheduled',
+  awaiting_app_managed_publish: 'Scheduled',
+  published: 'Published',
+  failed: 'Failed',
+};
+
 export function BatchPreview() {
   const { batchId } = useParams<{ batchId: string }>();
   const { data: preview, isLoading: previewLoading } = usePreview(batchId);
@@ -29,20 +38,27 @@ export function BatchPreview() {
   const [publishError, setPublishError] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<PublishBatchResponse | null>(null);
 
-  // Resets the acknowledgement checkbox whenever the resolved rows/warnings
-  // actually change (e.g. after a refetch following a 409), so a previously
-  // ticked box can't silently carry forward past a change in what it was
-  // acknowledging.
+  const pendingRows = useMemo(
+    () => (preview?.rows ?? []).filter((row) => row.status === 'pending'),
+    [preview],
+  );
+
+  // Resets the acknowledgement checkbox whenever the *pending* rows/warnings
+  // actually change (e.g. after a refetch following a successful publish, or
+  // a 409), so a previously ticked box can't silently carry forward past a
+  // change in what it was acknowledging. Rows that already moved past
+  // 'pending' (queued/published/etc.) are excluded — their warnings are no
+  // longer anything this checkbox needs to gate.
   const warningsSignature = useMemo(
     () =>
       JSON.stringify(
-        (preview?.rows ?? []).map((row) => ({
+        pendingRows.map((row) => ({
           id: row.id,
           blocking: row.blocking,
           warnings: row.warnings,
         })),
       ),
-    [preview],
+    [pendingRows],
   );
   const previousSignatureRef = useRef<string | null>(null);
   useEffect(() => {
@@ -60,10 +76,15 @@ export function BatchPreview() {
   }
 
   const { rows } = preview;
-  const hasBlocking = rows.some((row) => row.blocking);
-  const hasNonBlockingWarnings = rows.some((row) => !row.blocking && row.warnings.length > 0);
+  // Gating only looks at rows still 'pending' — a row already queued/
+  // published/failed by an earlier publish call has nothing left for this
+  // action to do, and shouldn't be able to wedge a batch that otherwise has
+  // new pending work (or, symmetrically, shouldn't leave the button enabled
+  // once every pending row has been scheduled).
+  const hasBlocking = pendingRows.some((row) => row.blocking);
+  const hasNonBlockingWarnings = pendingRows.some((row) => !row.blocking && row.warnings.length > 0);
   const publishDisabled =
-    hasBlocking || (hasNonBlockingWarnings && !acknowledged) || publishing || rows.length === 0;
+    hasBlocking || (hasNonBlockingWarnings && !acknowledged) || publishing || pendingRows.length === 0;
 
   async function handlePublish() {
     if (!batchId) return;
@@ -138,6 +159,11 @@ export function BatchPreview() {
                 >
                   <td className="px-4 py-3 align-top text-sm font-medium text-slate-900">
                     {row.originalFilename ?? 'Unknown file'}
+                    {row.status !== 'pending' && (
+                      <span className="mt-1 block w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                        {STATUS_LABELS[row.status] ?? row.status}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 align-top text-sm text-slate-700">
                     <p className="font-medium text-slate-900">
@@ -224,10 +250,20 @@ export function BatchPreview() {
       )}
 
       {publishResult && (
-        <p role="status" className="mt-4 text-sm font-medium text-emerald-600">
-          Scheduled {publishResult.queuedCount} post
-          {publishResult.queuedCount === 1 ? '' : 's'} for publishing.
-        </p>
+        <div className="mt-4 space-y-1">
+          <p role="status" className="text-sm font-medium text-emerald-600">
+            Scheduled {publishResult.queuedCount} post
+            {publishResult.queuedCount === 1 ? '' : 's'} for publishing.
+          </p>
+          {publishResult.failedPostTargetIds.length > 0 && (
+            <p role="alert" className="text-sm font-medium text-amber-700">
+              {publishResult.failedPostTargetIds.length} row
+              {publishResult.failedPostTargetIds.length === 1 ? '' : 's'} couldn&apos;t be queued
+              and {publishResult.failedPostTargetIds.length === 1 ? 'is' : 'are'} still pending —
+              try &quot;Schedule batch&quot; again.
+            </p>
+          )}
+        </div>
       )}
 
       <button

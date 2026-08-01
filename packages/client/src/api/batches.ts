@@ -105,6 +105,7 @@ export interface PreviewRow {
   schedulingMode: 'native_scheduled' | 'awaiting_app_managed_publish' | null;
   warnings: PreviewWarning[];
   blocking: boolean;
+  status: string;
 }
 
 export interface PreviewResponse {
@@ -125,6 +126,7 @@ export interface PublishBatchResponse {
   batchId: string;
   queuedCount: number;
   postTargetIds: string[];
+  failedPostTargetIds: string[];
 }
 
 export function publishBatch(batchId: string): Promise<PublishBatchResponse> {

@@ -21,7 +21,12 @@ export async function enqueuePublishToTarget(
   const queue = getQueue<PublishToTargetJobData>(
     publishToTargetQueueName(platform, externalAccountOrProjectId),
   );
+  // jobId pinned to postTargetId so a second call for the same row (a UI
+  // double-click, a client retry after a network blip, a re-run of the
+  // publish loop) dedupes against BullMQ's existing job rather than queuing
+  // a second real publish attempt.
   return queue.add('publish', data, {
+    jobId: data.postTargetId,
     attempts: 5,
     backoff: { type: 'exponential', delay: 5000 },
   });
