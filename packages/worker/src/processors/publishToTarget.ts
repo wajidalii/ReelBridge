@@ -1,10 +1,12 @@
 import { facebookPageAdapter } from '@reelbridge/platform-facebook';
+import { youtubeChannelAdapter } from '@reelbridge/platform-youtube';
 import type { PlatformAdapter, PublishToTargetJobData } from '@reelbridge/shared';
 import {
   createStorageAdapterFromEnv,
   decrypt,
   getDb,
   mediaAssets,
+  platformConnections,
   postItems,
   postTargets,
   publishTargets,
@@ -14,6 +16,7 @@ import { eq } from 'drizzle-orm';
 
 const ADAPTERS_BY_PLATFORM: Partial<Record<string, PlatformAdapter>> = {
   facebook_page: facebookPageAdapter,
+  youtube_channel: youtubeChannelAdapter,
 };
 
 async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -24,12 +27,83 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+function loadGoogleOAuthConfig(): { clientId: string; clientSecret: string } {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error('GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET environment variables are not set');
+  }
+  return { clientId, clientSecret };
+}
+
+interface PublishTargetRow {
+  id: string;
+  platform: string;
+  platformConnectionId: string;
+  accessTokenCiphertext: string | null;
+  accessTokenIv: string | null;
+  accessTokenTag: string | null;
+}
+
+interface PlatformConnectionRow {
+  id: string;
+  refreshTokenCiphertext: string | null;
+  refreshTokenIv: string | null;
+  refreshTokenTag: string | null;
+}
+
+/**
+ * Builds the adapter-specific `target.metadata` payload. Facebook Page
+ * tokens live per-target and are long-lived, so they're decrypted directly;
+ * YouTube uses the *connection's* refresh token instead (publish_targets
+ * stays tokenless for youtube_channel rows — upsertGoogleConnection.ts) and
+ * mints a fresh access token per upload rather than trusting a per-target
+ * one that may already be stale by the time a queued job runs.
+ */
+function buildTargetMetadata(
+  publishTarget: PublishTargetRow,
+  platformConnection: PlatformConnectionRow,
+  buffer: Buffer,
+): Record<string, unknown> {
+  if (publishTarget.platform === 'youtube_channel') {
+    if (
+      !platformConnection.refreshTokenCiphertext ||
+      !platformConnection.refreshTokenIv ||
+      !platformConnection.refreshTokenTag
+    ) {
+      throw new Error(
+        `platform_connections row ${platformConnection.id} is missing a refresh token`,
+      );
+    }
+    const refreshToken = decrypt({
+      ciphertext: platformConnection.refreshTokenCiphertext,
+      iv: platformConnection.refreshTokenIv,
+      tag: platformConnection.refreshTokenTag,
+    });
+    return { refreshToken, oauthConfig: loadGoogleOAuthConfig(), media: { buffer } };
+  }
+
+  if (
+    !publishTarget.accessTokenCiphertext ||
+    !publishTarget.accessTokenIv ||
+    !publishTarget.accessTokenTag
+  ) {
+    throw new Error(`publish_targets row ${publishTarget.id} is missing an access token`);
+  }
+  const accessToken = decrypt({
+    ciphertext: publishTarget.accessTokenCiphertext,
+    iv: publishTarget.accessTokenIv,
+    tag: publishTarget.accessTokenTag,
+  });
+  return { accessToken, media: { buffer } };
+}
+
 /**
  * Reads a due post_targets row, fetches its media from storage, calls the
  * matching platform adapter's publish(), and writes the result back —
  * the "worker does the real publish work, never the API" boundary in practice.
- * Only facebook_page is wired today; Instagram/YouTube adapters land in their
- * own milestones and will register here the same way.
+ * facebook_page and youtube_channel are wired; Instagram lands in its own
+ * milestone and will register here the same way.
  */
 export async function processPublishToTarget(job: Job<PublishToTargetJobData>): Promise<void> {
   const db = getDb();
@@ -41,39 +115,24 @@ export async function processPublishToTarget(job: Job<PublishToTargetJobData>): 
       publishTarget: publishTargets,
       postItem: postItems,
       mediaAsset: mediaAssets,
+      platformConnection: platformConnections,
     })
     .from(postTargets)
     .innerJoin(publishTargets, eq(postTargets.publishTargetId, publishTargets.id))
     .innerJoin(postItems, eq(postTargets.postItemId, postItems.id))
     .innerJoin(mediaAssets, eq(postItems.mediaAssetId, mediaAssets.id))
+    .innerJoin(platformConnections, eq(publishTargets.platformConnectionId, platformConnections.id))
     .where(eq(postTargets.id, postTargetId));
 
   if (!row) {
     throw new Error(`post_targets row ${postTargetId} not found`);
   }
-  const { postTarget, publishTarget, postItem, mediaAsset } = row;
+  const { postTarget, publishTarget, postItem, mediaAsset, platformConnection } = row;
 
   const adapter = ADAPTERS_BY_PLATFORM[publishTarget.platform];
   if (!adapter) {
     throw new Error(`No platform adapter registered for ${publishTarget.platform}`);
   }
-  if (
-    !publishTarget.accessTokenCiphertext ||
-    !publishTarget.accessTokenIv ||
-    !publishTarget.accessTokenTag
-  ) {
-    throw new Error(`publish_targets row ${publishTarget.id} is missing an access token`);
-  }
-
-  const accessToken = decrypt({
-    ciphertext: publishTarget.accessTokenCiphertext,
-    iv: publishTarget.accessTokenIv,
-    tag: publishTarget.accessTokenTag,
-  });
-
-  const storage = createStorageAdapterFromEnv();
-  const mediaStream = await storage.read(mediaAsset.storageKey);
-  const buffer = await streamToBuffer(mediaStream);
 
   await db
     .update(postTargets)
@@ -81,13 +140,25 @@ export async function processPublishToTarget(job: Job<PublishToTargetJobData>): 
     .where(eq(postTargets.id, postTargetId));
 
   const caption = postTarget.captionOverride ?? postItem.defaultCaption;
+  const title = postTarget.titleOverride ?? postItem.defaultTitle ?? undefined;
 
   try {
+    // Storage read and metadata-building (token decryption) live inside this
+    // try too, not just adapter.publish() — a missing/undecryptable token or
+    // an unreadable media object is exactly as much a publish failure as the
+    // platform API rejecting the call, and needs the same post_targets
+    // 'failed' + last_error treatment rather than leaving the row stuck at
+    // 'uploading' with BullMQ silently retrying.
+    const storage = createStorageAdapterFromEnv();
+    const mediaStream = await storage.read(mediaAsset.storageKey);
+    const buffer = await streamToBuffer(mediaStream);
+    const metadata = buildTargetMetadata(publishTarget, platformConnection, buffer);
+
     const result = await adapter.publish(
       {
         externalId: publishTarget.externalId,
         displayName: publishTarget.displayName,
-        metadata: { accessToken, media: { buffer } },
+        metadata,
       },
       {
         mediaAssetId: mediaAsset.id,
@@ -98,7 +169,7 @@ export async function processPublishToTarget(job: Job<PublishToTargetJobData>): 
         width: mediaAsset.width ?? undefined,
         height: mediaAsset.height ?? undefined,
       },
-      { caption, title: postTarget.titleOverride ?? undefined },
+      { caption, title },
       postTarget.scheduledAt ?? undefined,
     );
 

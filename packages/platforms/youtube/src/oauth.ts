@@ -59,3 +59,30 @@ export async function exchangeCodeForTokens(
     scope: result.scope,
   };
 }
+
+export interface GoogleRefreshResult {
+  accessToken: string;
+  expiresInSeconds?: number;
+}
+
+/**
+ * Mints a fresh access token from the connection-level refresh token
+ * (TDD.md §1.3) — publish_targets.access_token_ciphertext stays null for
+ * youtube_channel rows, so every upload calls this rather than reusing a
+ * per-target token the way Facebook Page tokens work.
+ */
+export async function refreshAccessToken(
+  config: Pick<GoogleOAuthConfig, 'clientId' | 'clientSecret'>,
+  refreshToken: string,
+): Promise<GoogleRefreshResult> {
+  const result = await googlePost<{ access_token: string; expires_in?: number }>(
+    GOOGLE_OAUTH_TOKEN_URL,
+    {
+      refresh_token: refreshToken,
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      grant_type: 'refresh_token',
+    },
+  );
+  return { accessToken: result.access_token, expiresInSeconds: result.expires_in };
+}
