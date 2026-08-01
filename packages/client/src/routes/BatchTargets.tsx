@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import {
   assignTargets,
   autoDistribute,
@@ -268,9 +268,17 @@ export function BatchTargets() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-        Assign targets — {batch.name}
-      </h1>
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+          Assign targets — {batch.name}
+        </h1>
+        <Link
+          to={`/batches/${batchId}/preview`}
+          className="text-sm font-medium text-brand-600 hover:underline"
+        >
+          Preview & schedule →
+        </Link>
+      </div>
       <p className="mt-2 text-slate-600">
         Choose where each video goes, customize captions if needed, and decide when it publishes.
       </p>
