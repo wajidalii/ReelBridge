@@ -19,6 +19,8 @@ import type { Job } from 'bullmq';
 import { processPollStatus } from './pollStatus.js';
 
 process.env.ENCRYPTION_KEY ||= 'l7h1fhRbl+M+3zH5zb+r7GdNaEDefpRIrBBXA7DB1NQ=';
+process.env.GOOGLE_CLIENT_ID ||= 'test-google-client-id';
+process.env.GOOGLE_CLIENT_SECRET ||= 'test-google-client-secret';
 
 const TEST_EMAIL_PREFIX = 'reelbridge-poll-status-test+';
 
@@ -158,7 +160,9 @@ describe.skipIf(!dbReachable)('processPollStatus (Facebook)', () => {
       await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
       await db.delete(users).where(inArray(users.id, userIds));
     }
-    await getPool().end();
+    // Pool close deferred to the last describe block's afterAll (below) —
+    // closing it here would break the YouTube describe block that still
+    // needs it, since describe blocks in this file run sequentially.
   });
 
   afterEach(() => {
@@ -235,5 +239,202 @@ describe.skipIf(!dbReachable)('processPollStatus (Facebook)', () => {
     await processPollStatus(job);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+async function createNativeScheduledYouTubePostTarget(email: string, platformPostId: string) {
+  const db = getDb();
+  const [user] = await db.insert(users).values({ email, passwordHash: 'unused' }).returning();
+  if (!user) throw new Error('failed to insert test user');
+
+  const encryptedAccessToken = encrypt('google-access-token');
+  const encryptedRefreshToken = encrypt('google-refresh-token');
+  const [connection] = await db
+    .insert(platformConnections)
+    .values({
+      userId: user.id,
+      platform: 'google',
+      externalAccountId: 'me',
+      displayName: 'Google',
+      accessTokenCiphertext: encryptedAccessToken.ciphertext,
+      accessTokenIv: encryptedAccessToken.iv,
+      accessTokenTag: encryptedAccessToken.tag,
+      refreshTokenCiphertext: encryptedRefreshToken.ciphertext,
+      refreshTokenIv: encryptedRefreshToken.iv,
+      refreshTokenTag: encryptedRefreshToken.tag,
+    })
+    .returning();
+  if (!connection) throw new Error('failed to insert test connection');
+
+  // publish_targets.access_token_ciphertext stays null for youtube_channel
+  // rows in production (upsertGoogleConnection.ts).
+  const [target] = await db
+    .insert(publishTargets)
+    .values({
+      userId: user.id,
+      platformConnectionId: connection.id,
+      platform: 'youtube_channel',
+      externalId: `channel-${email}`,
+      displayName: 'Poll Status Test Channel',
+      tokenSource: 'oauth',
+    })
+    .returning();
+  if (!target) throw new Error('failed to insert test target');
+
+  const [batch] = await db
+    .insert(postBatches)
+    .values({ userId: user.id, name: 'YouTube poll status test batch' })
+    .returning();
+  if (!batch) throw new Error('failed to insert test batch');
+
+  const [media] = await db
+    .insert(mediaAssets)
+    .values({
+      userId: user.id,
+      originalFilename: 'clip.mp4',
+      storageKey: `${user.id}/unused.mp4`,
+      fileSizeBytes: 1,
+    })
+    .returning();
+  if (!media) throw new Error('failed to insert test media asset');
+
+  const [item] = await db
+    .insert(postItems)
+    .values({
+      batchId: batch.id,
+      mediaAssetId: media.id,
+      defaultCaption: 'YouTube poll status test caption',
+    })
+    .returning();
+  if (!item) throw new Error('failed to insert test post item');
+
+  const [postTarget] = await db
+    .insert(postTargets)
+    .values({
+      postItemId: item.id,
+      publishTargetId: target.id,
+      status: 'native_scheduled',
+      platformPostId,
+    })
+    .returning();
+  if (!postTarget) throw new Error('failed to insert test post target');
+
+  return { user, target, postTarget };
+}
+
+describe.skipIf(!dbReachable)('processPollStatus (YouTube)', () => {
+  afterAll(async () => {
+    const db = getDb();
+    const testUsers = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(like(users.email, `${TEST_EMAIL_PREFIX}%`));
+    const userIds = testUsers.map((u) => u.id);
+    if (userIds.length > 0) {
+      const batches = await db
+        .select({ id: postBatches.id })
+        .from(postBatches)
+        .where(inArray(postBatches.userId, userIds));
+      const batchIds = batches.map((b) => b.id);
+      if (batchIds.length > 0) {
+        const items = await db
+          .select({ id: postItems.id })
+          .from(postItems)
+          .where(inArray(postItems.batchId, batchIds));
+        const itemIds = items.map((i) => i.id);
+        if (itemIds.length > 0) {
+          await db.delete(postTargets).where(inArray(postTargets.postItemId, itemIds));
+          await db.delete(postItems).where(inArray(postItems.id, itemIds));
+        }
+        await db.delete(postBatches).where(inArray(postBatches.id, batchIds));
+      }
+      await db.delete(mediaAssets).where(inArray(mediaAssets.userId, userIds));
+      await db.delete(publishTargets).where(inArray(publishTargets.userId, userIds));
+      await db.delete(platformConnections).where(inArray(platformConnections.userId, userIds));
+      await db.delete(users).where(inArray(users.id, userIds));
+    }
+    await getPool().end();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubGoogleApis(videoResponder: () => { privacyStatus?: string; publishAt?: string }[]) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const urlStr = input.toString();
+        if (urlStr === 'https://oauth2.googleapis.com/token') {
+          const params = init?.body as URLSearchParams;
+          expect(params.get('grant_type')).toBe('refresh_token');
+          expect(params.get('refresh_token')).toBe('google-refresh-token');
+          return jsonResponse({ access_token: 'fresh-access-token', expires_in: 3600 });
+        }
+        expect(urlStr).toContain('/youtube/v3/videos');
+        const items = videoResponder().map((status) => ({ status }));
+        return jsonResponse({ items });
+      }),
+    );
+  }
+
+  it('decrypts the connection-level refresh token, flips a public video to published, and backfills the permalink', async () => {
+    const { postTarget } = await createNativeScheduledYouTubePostTarget(
+      `${TEST_EMAIL_PREFIX}yt-published-${Date.now()}@example.com`,
+      'yt-video-published-1',
+    );
+
+    stubGoogleApis(() => [{ privacyStatus: 'public' }]);
+
+    const job = {
+      data: { postTargetId: postTarget.id } as PollStatusJobData,
+    } as Job<PollStatusJobData>;
+    await processPollStatus(job);
+
+    const db = getDb();
+    const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
+    expect(updated?.status).toBe('published');
+    expect(updated?.permalinkUrl).toBe('https://www.youtube.com/watch?v=yt-video-published-1');
+    expect(updated?.publishedAt).not.toBeNull();
+  });
+
+  it('flips a still-private video past its publishAt to failed with an explained last_error', async () => {
+    const { postTarget } = await createNativeScheduledYouTubePostTarget(
+      `${TEST_EMAIL_PREFIX}yt-mismatch-${Date.now()}@example.com`,
+      'yt-video-mismatch-1',
+    );
+    const publishAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+    stubGoogleApis(() => [{ privacyStatus: 'private', publishAt }]);
+
+    const job = {
+      data: { postTargetId: postTarget.id } as PollStatusJobData,
+    } as Job<PollStatusJobData>;
+    await processPollStatus(job);
+
+    const db = getDb();
+    const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
+    expect(updated?.status).toBe('failed');
+    expect(updated?.lastError).toMatch(/private/);
+  });
+
+  it('leaves a still-private video before its publishAt untouched (pending)', async () => {
+    const { postTarget } = await createNativeScheduledYouTubePostTarget(
+      `${TEST_EMAIL_PREFIX}yt-pending-${Date.now()}@example.com`,
+      'yt-video-pending-1',
+    );
+    const publishAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    stubGoogleApis(() => [{ privacyStatus: 'private', publishAt }]);
+
+    const job = {
+      data: { postTargetId: postTarget.id } as PollStatusJobData,
+    } as Job<PollStatusJobData>;
+    await processPollStatus(job);
+
+    const db = getDb();
+    const [updated] = await db.select().from(postTargets).where(eq(postTargets.id, postTarget.id));
+    expect(updated?.status).toBe('native_scheduled');
+    expect(updated?.lastError).toBeNull();
   });
 });

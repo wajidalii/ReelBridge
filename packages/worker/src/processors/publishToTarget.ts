@@ -13,6 +13,7 @@ import {
 } from '@reelbridge/shared';
 import type { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
+import { loadGoogleOAuthConfig } from '../googleOAuthConfig.js';
 
 const ADAPTERS_BY_PLATFORM: Partial<Record<string, PlatformAdapter>> = {
   facebook_page: facebookPageAdapter,
@@ -25,15 +26,6 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return Buffer.concat(chunks);
-}
-
-function loadGoogleOAuthConfig(): { clientId: string; clientSecret: string } {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    throw new Error('GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET environment variables are not set');
-  }
-  return { clientId, clientSecret };
 }
 
 interface PublishTargetRow {

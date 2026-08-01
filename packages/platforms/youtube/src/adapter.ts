@@ -8,37 +8,51 @@ import type {
   TargetDescriptor,
   ValidationWarning,
 } from '@reelbridge/shared';
+import { googleGet } from './googleClient.js';
 import type { GoogleOAuthConfig } from './oauth.js';
 import { refreshAccessToken } from './oauth.js';
 import { initiateResumableUpload, uploadVideoChunks } from './upload.js';
 
 /**
  * TargetDescriptor (packages/shared) has no token fields, so the caller (the
- * worker's publish-to-target processor) is responsible for decrypting the
+ * worker's publish/poll-status processors) is responsible for decrypting the
  * *connection's* refresh token (not a per-target one — publish_targets stays
- * tokenless for youtube_channel rows, see upsertGoogleConnection.ts) and the
- * media asset's bytes, and passing both through via `metadata`.
+ * tokenless for youtube_channel rows, see upsertGoogleConnection.ts) and
+ * passing it through via `metadata`.
  */
-export interface YouTubePublishMetadata {
+export interface YouTubeAuthMetadata {
   refreshToken: string;
   oauthConfig: Pick<GoogleOAuthConfig, 'clientId' | 'clientSecret'>;
+}
+
+export interface YouTubePublishMetadata extends YouTubeAuthMetadata {
   media: { buffer: Buffer };
 }
 
-function requireYouTubeMetadata(target: TargetDescriptor): YouTubePublishMetadata {
-  const metadata = target.metadata as Partial<YouTubePublishMetadata> | undefined;
+function requireYouTubeAuthMetadata(target: TargetDescriptor): YouTubeAuthMetadata {
+  const metadata = target.metadata as Partial<YouTubeAuthMetadata> | undefined;
   if (
     !metadata ||
     typeof metadata.refreshToken !== 'string' ||
     !metadata.oauthConfig?.clientId ||
-    !metadata.oauthConfig?.clientSecret ||
-    !metadata.media?.buffer
+    !metadata.oauthConfig?.clientSecret
   ) {
+    throw new Error(
+      'target.metadata.{refreshToken, oauthConfig} are required to act on a YouTube channel',
+    );
+  }
+  return { refreshToken: metadata.refreshToken, oauthConfig: metadata.oauthConfig };
+}
+
+function requireYouTubeMetadata(target: TargetDescriptor): YouTubePublishMetadata {
+  const auth = requireYouTubeAuthMetadata(target);
+  const media = (target.metadata as Partial<YouTubePublishMetadata> | undefined)?.media;
+  if (!media?.buffer) {
     throw new Error(
       'target.metadata.{refreshToken, oauthConfig, media.buffer} are required to publish to a YouTube channel',
     );
   }
-  return metadata as YouTubePublishMetadata;
+  return { ...auth, media };
 }
 
 export const youtubeChannelAdapter: PlatformAdapter = {
@@ -93,10 +107,43 @@ export const youtubeChannelAdapter: PlatformAdapter = {
     };
   },
 
-  async checkStatus(): Promise<StatusResult> {
-    // Real status polling (tracking a scheduled video's flip from private to
-    // its target visibility) lands in its own milestone (#29) alongside the
-    // rest of YouTube's native-scheduling wiring.
+  async checkStatus(target: TargetDescriptor, platformPostId: string): Promise<StatusResult> {
+    const { refreshToken, oauthConfig } = requireYouTubeAuthMetadata(target);
+    const { accessToken } = await refreshAccessToken(oauthConfig, refreshToken);
+
+    const result = await googleGet<{
+      items?: Array<{ status?: { privacyStatus?: string; publishAt?: string } }>;
+    }>('/videos', { part: 'status', id: platformPostId }, accessToken);
+
+    const video = result.items?.[0];
+    if (!video) {
+      return {
+        status: 'failed',
+        errorMessage: `YouTube reported no video found for id ${platformPostId}`,
+      };
+    }
+
+    const privacyStatus = video.status?.privacyStatus;
+    if (privacyStatus && privacyStatus !== 'private') {
+      return {
+        status: 'published',
+        permalinkUrl: `https://www.youtube.com/watch?v=${platformPostId}`,
+      };
+    }
+
+    // Still private. Expected while waiting for a scheduled publishAt that
+    // hasn't arrived yet — only a real problem once that time has already
+    // passed, per acceptance criteria: surface the requested/actual
+    // visibility mismatch (most likely the compliance-audit restriction,
+    // TDD.md §1.3, holding every upload to private pre-audit) as a distinct,
+    // explained failure rather than staying silently "pending" forever.
+    const publishAt = video.status?.publishAt;
+    if (publishAt && new Date(publishAt).getTime() <= Date.now()) {
+      return {
+        status: 'failed',
+        errorMessage: `YouTube kept this video private past its scheduled publish time (${publishAt}) — likely blocked by the pending YouTube API compliance audit; it was not actually published.`,
+      };
+    }
     return { status: 'pending' };
   },
 

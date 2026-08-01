@@ -115,17 +115,90 @@ describe('youtubeChannelAdapter.publish', () => {
     expect(result).toEqual({ platformPostId: 'yt-video-2', status: 'native_scheduled' });
   });
 
-  it('throws a clear error when target.metadata is missing the refresh token, oauth config, or media buffer', async () => {
+  it('throws a clear error when target.metadata is missing the refresh token or oauth config', async () => {
     await expect(
       youtubeChannelAdapter.publish(buildTarget({ metadata: {} }), mediaAsset, caption),
-    ).rejects.toThrow(/refreshToken.*oauthConfig.*media\.buffer/);
+    ).rejects.toThrow(/refreshToken.*oauthConfig/);
+  });
+
+  it('throws a clear error when target.metadata is missing the media buffer', async () => {
+    await expect(
+      youtubeChannelAdapter.publish(
+        buildTarget({
+          metadata: {
+            refreshToken: 'stored-refresh-token',
+            oauthConfig: { clientId: 'client-id', clientSecret: 'client-secret' },
+          },
+        }),
+        mediaAsset,
+        caption,
+      ),
+    ).rejects.toThrow(/media\.buffer/);
   });
 });
 
 describe('youtubeChannelAdapter.checkStatus', () => {
-  it('returns pending — real status polling lands in its own milestone', async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubVideosList(
+    responder: (params: URLSearchParams) => { privacyStatus?: string; publishAt?: string }[],
+  ) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(input.toString());
+        if (url.pathname === '/token') {
+          return jsonResponse({ access_token: 'fresh-access-token', expires_in: 3600 });
+        }
+        expect(url.pathname).toBe('/youtube/v3/videos');
+        const items = responder(url.searchParams).map((status) => ({ status }));
+        return jsonResponse({ items });
+      }),
+    );
+  }
+
+  it('maps a public video to status=published with its watch-page permalink', async () => {
+    stubVideosList(() => [{ privacyStatus: 'public' }]);
+
+    const result = await youtubeChannelAdapter.checkStatus(buildTarget(), 'yt-video-1');
+    expect(result).toEqual({
+      status: 'published',
+      permalinkUrl: 'https://www.youtube.com/watch?v=yt-video-1',
+    });
+  });
+
+  it('maps a still-private video whose publishAt has not arrived yet to pending', async () => {
+    const publishAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    stubVideosList(() => [{ privacyStatus: 'private', publishAt }]);
+
     const result = await youtubeChannelAdapter.checkStatus(buildTarget(), 'yt-video-1');
     expect(result).toEqual({ status: 'pending' });
+  });
+
+  it('maps a still-private video past its publishAt to a distinct, explained failure rather than silent pending', async () => {
+    const publishAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    stubVideosList(() => [{ privacyStatus: 'private', publishAt }]);
+
+    const result = await youtubeChannelAdapter.checkStatus(buildTarget(), 'yt-video-1');
+    expect(result.status).toBe('failed');
+    expect(result.errorMessage).toMatch(/private/);
+    expect(result.errorMessage).toMatch(publishAt);
+  });
+
+  it('maps a missing video to a failure explaining nothing was found', async () => {
+    stubVideosList(() => []);
+
+    const result = await youtubeChannelAdapter.checkStatus(buildTarget(), 'yt-video-missing');
+    expect(result.status).toBe('failed');
+    expect(result.errorMessage).toMatch(/yt-video-missing/);
+  });
+
+  it('throws when target.metadata is missing the refresh token or oauth config', async () => {
+    await expect(
+      youtubeChannelAdapter.checkStatus(buildTarget({ metadata: {} }), 'yt-video-1'),
+    ).rejects.toThrow(/refreshToken.*oauthConfig/);
   });
 });
 
