@@ -32,7 +32,7 @@ function redirectWithError(
   res: Response,
   clientUrl: string,
   message: string,
-  intent?: 'facebook' | 'instagram',
+  intent?: 'facebook' | 'instagram' | 'youtube',
 ): void {
   const params = new URLSearchParams({ error: message });
   if (intent) params.set('intent', intent);
