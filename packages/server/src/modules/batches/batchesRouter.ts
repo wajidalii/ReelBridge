@@ -565,6 +565,30 @@ batchesRouter.post(
         continue;
       }
 
+      // Instagram (and any other adapter without native scheduling) has no
+      // platform-side "publish this later" call — a container simply expires
+      // 24h after creation (TDD.md §1.2). Enqueuing the real publish job now
+      // for a row scheduled days out would run it immediately instead of at
+      // the intended time (adapter.publish() ignores scheduledAt entirely).
+      // So rows like this sit in `awaiting_app_managed_publish` instead of
+      // being enqueued here; the due-job sweep (cron/appManagedPublishSweep.ts)
+      // enqueues them once scheduledAt actually arrives. A row with no
+      // scheduledAt, or one already due, publishes immediately same as
+      // native-scheduling platforms.
+      const isDeferredAppManaged =
+        row.schedulingMode === 'awaiting_app_managed_publish' &&
+        row.scheduledAt !== null &&
+        row.scheduledAt.getTime() > Date.now();
+
+      if (isDeferredAppManaged) {
+        await db
+          .update(postTargets)
+          .set({ status: 'awaiting_app_managed_publish', updatedAt: new Date() })
+          .where(eq(postTargets.id, row.id));
+        queuedPostTargetIds.push(row.id);
+        continue;
+      }
+
       try {
         await enqueuePublishToTarget(publishTarget.platform, publishTarget.externalId, {
           postTargetId: row.id,
