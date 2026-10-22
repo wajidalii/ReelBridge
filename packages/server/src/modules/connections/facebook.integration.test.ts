@@ -7,6 +7,12 @@ import { getDb, getPool, platformConnections, publishTargets, users } from '@ree
 import { createApp } from '../../app.js';
 import { signOAuthState, verifyOAuthState } from './oauthState.js';
 
+// The callback only proceeds when the browser presents the nonce cookie set
+// by /start (oauthNonce.ts) — tests that mint a state directly mirror that.
+function nonceCookieFor(state: string): string {
+  return `reelbridge_oauth_facebook=${verifyOAuthState(state).nonce}`;
+}
+
 // `||=` rather than `??=`: a real .env commonly has these as empty-string
 // placeholders (see .env.example), which `??=` would not treat as "unset".
 process.env.JWT_SECRET ||= 'test-jwt-secret-for-integration-tests-only';
@@ -114,9 +120,11 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
       platform: 'facebook',
       intent: 'facebook',
     });
-    const res = await request(app).get(
-      `/api/connections/facebook/callback?code=auth-code-123&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/facebook/callback?code=auth-code-123&state=${encodeURIComponent(state)}`,
+      )
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -185,9 +193,11 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
       platform: 'facebook',
       intent: 'facebook',
     });
-    const res = await request(app).get(
-      `/api/connections/facebook/callback?code=auth-code-personal&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/facebook/callback?code=auth-code-personal&state=${encodeURIComponent(state)}`,
+      )
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -197,7 +207,9 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
     const targets = await getDb()
       .select()
       .from(publishTargets)
-      .where(and(eq(publishTargets.userId, userId), eq(publishTargets.platform, 'instagram_business')));
+      .where(
+        and(eq(publishTargets.userId, userId), eq(publishTargets.platform, 'instagram_business')),
+      );
     expect(targets.find((t) => t.externalId === 'ig-3')).toBeUndefined();
   });
 
@@ -226,9 +238,11 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
       platform: 'facebook',
       intent: 'facebook',
     });
-    const res = await request(app).get(
-      `/api/connections/facebook/callback?code=auth-code-empty&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/facebook/callback?code=auth-code-empty&state=${encodeURIComponent(state)}`,
+      )
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -292,9 +306,11 @@ describe.skipIf(!dbReachable)('Facebook OAuth connect flow', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const callbackRes = await request(app).get(
-      `/api/connections/facebook/callback?code=intent-test-code&state=${encodeURIComponent(state!)}`,
-    );
+    const callbackRes = await request(app)
+      .get(
+        `/api/connections/facebook/callback?code=intent-test-code&state=${encodeURIComponent(state!)}`,
+      )
+      .set('Cookie', nonceCookieFor(state!));
     expect(callbackRes.status).toBe(302);
     const location = redirectLocation(callbackRes);
     expect(location.searchParams.get('intent')).toBe('instagram');

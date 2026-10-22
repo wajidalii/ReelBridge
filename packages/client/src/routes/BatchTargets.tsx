@@ -106,9 +106,7 @@ export function BatchTargets() {
     if (!batchId) return;
     const ui = getItemUi(item);
     const existingTargetIds = new Set(item.targets.map((t) => t.publishTargetId));
-    const targetIdsToSubmit = [...ui.selectedTargetIds].filter(
-      (id) => !existingTargetIds.has(id),
-    );
+    const targetIdsToSubmit = [...ui.selectedTargetIds].filter((id) => !existingTargetIds.has(id));
     if (targetIdsToSubmit.length === 0) return;
 
     const targetsById = new Map((targets ?? []).map((t) => [t.id, t]));
@@ -235,7 +233,8 @@ export function BatchTargets() {
       setItemUi((prev) => {
         const next = { ...prev };
         for (const { itemId, targetId, scheduledAt } of allAssignments) {
-          const current = next[itemId] ?? makeItemUiState(batch.items.find((i) => i.id === itemId)!);
+          const current =
+            next[itemId] ?? makeItemUiState(batch.items.find((i) => i.id === itemId)!);
           next[itemId] = {
             ...current,
             perTargetScheduledAt: { ...current.perTargetScheduledAt, [targetId]: scheduledAt },
@@ -308,7 +307,10 @@ export function BatchTargets() {
         {schedulingMode === 'auto' && (
           <div className="mt-4 flex flex-wrap items-end gap-3">
             <div>
-              <label htmlFor="daily-slot-times" className="block text-sm font-medium text-slate-700">
+              <label
+                htmlFor="daily-slot-times"
+                className="block text-sm font-medium text-slate-700"
+              >
                 Daily times (24h, comma-separated)
               </label>
               <input
@@ -439,12 +441,13 @@ export function BatchTargets() {
                     const rowId = `${item.id}-${targetId}`;
                     const caption = captionFor(ui, targetId);
                     const rowError = ui.rejectedByTarget[targetId];
-                    const describedByIds = [
-                      !target.capabilities.nativeScheduling ? `${rowId}-scheduling-note` : null,
-                      rowError ? `${rowId}-error` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' ') || undefined;
+                    const describedByIds =
+                      [
+                        !target.capabilities.nativeScheduling ? `${rowId}-scheduling-note` : null,
+                        rowError ? `${rowId}-error` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' ') || undefined;
 
                     return (
                       <div key={targetId} className="rounded-lg bg-slate-50 p-3">

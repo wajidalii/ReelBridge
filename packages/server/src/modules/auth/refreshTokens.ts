@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt, or } from 'drizzle-orm';
 import { getDb, refreshTokens } from '@reelbridge/shared';
 
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -61,4 +61,21 @@ export async function revokeRefreshTokenByRawToken(rawToken: string): Promise<vo
     .update(refreshTokens)
     .set({ revokedAt: new Date() })
     .where(and(eq(refreshTokens.tokenHash, tokenHash), isNull(refreshTokens.revokedAt)));
+}
+
+/** Revokes every live refresh token for a user — used after a password reset so stolen sessions die with the old password. */
+export async function revokeAllRefreshTokensForUser(userId: string): Promise<void> {
+  await getDb()
+    .update(refreshTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)));
+}
+
+/** Housekeeping: expired or long-revoked rows carry no security value and just slow the hash lookup's index. */
+export async function deleteStaleRefreshTokens(olderThan = new Date()): Promise<number> {
+  const deleted = await getDb()
+    .delete(refreshTokens)
+    .where(or(lt(refreshTokens.expiresAt, olderThan), lt(refreshTokens.revokedAt, olderThan)))
+    .returning({ id: refreshTokens.id });
+  return deleted.length;
 }

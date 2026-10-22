@@ -7,6 +7,7 @@ import {
 } from '@reelbridge/platform-youtube';
 import { Router, type Response } from 'express';
 import { requireAuth } from '../auth/middleware.js';
+import { clearOAuthNonceCookie, readOAuthNonceCookie, setOAuthNonceCookie } from './oauthNonce.js';
 import { signOAuthState, verifyOAuthState } from './oauthState.js';
 import { upsertGoogleConnection } from './upsertGoogleConnection.js';
 
@@ -36,12 +37,14 @@ export const googleConnectionsRouter = Router();
 
 googleConnectionsRouter.get('/start', requireAuth, (req, res) => {
   const config = loadGoogleOAuthConfig();
+  const nonce = randomUUID();
   const state = signOAuthState({
     userId: req.userId!,
-    nonce: randomUUID(),
+    nonce,
     platform: 'google',
     intent: 'youtube',
   });
+  setOAuthNonceCookie(res, 'google', nonce);
   res.redirect(buildGoogleOAuthUrl(config, state));
 });
 
@@ -74,6 +77,15 @@ googleConnectionsRouter.get('/callback', async (req, res) => {
     redirectWithError(res, clientUrl, 'Invalid state');
     return;
   }
+  if (readOAuthNonceCookie(req, 'google') !== statePayload.nonce) {
+    redirectWithError(
+      res,
+      clientUrl,
+      'This sign-in link was not started from this browser. Please try connecting again.',
+    );
+    return;
+  }
+  clearOAuthNonceCookie(res, 'google');
 
   try {
     const config = loadGoogleOAuthConfig();

@@ -1,5 +1,36 @@
-import { useQuery } from '@tanstack/react-query';
-import { apiGet, apiPost } from './client.js';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiDelete, apiGet, apiPost } from './client.js';
+
+export interface BatchListEntry {
+  id: string;
+  name: string;
+  status: string;
+  createdAt: string;
+  itemCount: number;
+  targetCount: number;
+  publishedCount: number;
+  failedCount: number;
+}
+
+export interface BatchListResponse {
+  batches: BatchListEntry[];
+  total: number;
+}
+
+export function useBatches(limit: number, offset: number) {
+  return useQuery({
+    queryKey: ['batches', { limit, offset }],
+    queryFn: () => apiGet<BatchListResponse>(`/batches?limit=${limit}&offset=${offset}`),
+  });
+}
+
+export function useDeleteBatch() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: string) => apiDelete(`/batches/${batchId}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['batches'] }),
+  });
+}
 
 export interface BatchMedia {
   id: string;

@@ -474,6 +474,9 @@ describe.skipIf(!ready)('processPublishToTarget (Instagram)', () => {
     let sawSignedVideoUrl = false;
     const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const urlStr = input.toString();
+      if (urlStr.includes('/content_publishing_limit')) {
+        return jsonResponse({ data: [{ quota_usage: 3, config: { quota_total: 100 } }] });
+      }
       if (urlStr.includes('/ig-user-processor-test/media') && !urlStr.includes('media_publish')) {
         const params = init?.body as URLSearchParams;
         expect(params.get('access_token')).toBe('linked-page-access-token');

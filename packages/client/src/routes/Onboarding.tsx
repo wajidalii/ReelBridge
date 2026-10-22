@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useConfig } from '../api/useConfig.js';
+import { YouTubePrivateOnlyNotice } from './ConnectYouTube.js';
 
 interface PlatformCardProps {
   title: string;
@@ -28,6 +29,7 @@ export function Onboarding() {
   // fails — a false "connect" button that 400s is worse than a brief gating
   // notice that clears once /api/config resolves.
   const metaApproved = config?.metaAppReviewApproved === true;
+  const youtubeApproved = config?.youtubeComplianceApproved === true;
 
   return (
     <div className="max-w-3xl">
@@ -42,8 +44,8 @@ export function Onboarding() {
         <PlatformCard title="Facebook" description="Post Reels directly to a Facebook Page.">
           {!isLoading && !metaApproved && (
             <p className="text-sm font-medium text-amber-700">
-              Currently invite-only while we complete Meta&apos;s App Review. You can still
-              connect a Page manually below.
+              Currently invite-only while we complete Meta&apos;s App Review. You can still connect
+              a Page manually below.
             </p>
           )}
           <div className="mt-3 flex flex-col items-start gap-2">
@@ -64,8 +66,8 @@ export function Onboarding() {
         >
           {!isLoading && !metaApproved ? (
             <p className="text-sm font-medium text-amber-700">
-              Currently invite-only while we complete Meta&apos;s App Review. Check back once
-              that clears to connect Instagram.
+              Currently invite-only while we complete Meta&apos;s App Review. Check back once that
+              clears to connect Instagram.
             </p>
           ) : (
             <Link to="/connect/facebook?intent=instagram" className={primaryButtonClasses}>
@@ -78,9 +80,12 @@ export function Onboarding() {
           title="YouTube"
           description="Post Reels as YouTube Shorts to a channel you manage."
         >
-          <p className="text-sm font-medium text-slate-500">
-            Not available yet — YouTube support is still in development.
-          </p>
+          {!isLoading && !youtubeApproved && <YouTubePrivateOnlyNotice />}
+          <div className="mt-3">
+            <Link to="/connect/youtube" className={primaryButtonClasses}>
+              Connect YouTube
+            </Link>
+          </div>
         </PlatformCard>
       </div>
     </div>

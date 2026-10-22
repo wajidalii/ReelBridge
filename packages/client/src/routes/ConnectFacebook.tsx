@@ -75,8 +75,8 @@ export function ConnectFacebook() {
 
       {noPagesFound && (
         <p role="status" className="mt-4 text-sm font-medium text-amber-700">
-          No Pages were auto-detected. This can happen for Pages under a Business Portfolio —
-          use manual entry below.
+          No Pages were auto-detected. This can happen for Pages under a Business Portfolio — use
+          manual entry below.
         </p>
       )}
 
@@ -88,8 +88,8 @@ export function ConnectFacebook() {
               : 'No Facebook Page was found to check for a linked Instagram Business account.'}
           </p>
           <p className="mt-2 text-sm text-amber-800">
-            Convert the Instagram account you want to use into a professional (Business)
-            account and link it to this Facebook Page, then reconnect.{' '}
+            Convert the Instagram account you want to use into a professional (Business) account and
+            link it to this Facebook Page, then reconnect.{' '}
             <a
               href="https://www.facebook.com/business/help/"
               target="_blank"
@@ -113,7 +113,9 @@ export function ConnectFacebook() {
           ) : (
             <button
               type="button"
-              onClick={() => (window.location.href = '/api/connections/facebook/start?intent=facebook')}
+              onClick={() =>
+                (window.location.href = '/api/connections/facebook/start?intent=facebook')
+              }
               className="inline-flex items-center rounded-lg bg-[#1877f2] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1364d6]"
             >
               Connect with Facebook
@@ -155,131 +157,134 @@ export function ConnectFacebook() {
           (SAAS_PLAN.md). Instagram has no manual-entry equivalent, so this section is
           Facebook-only. */}
       {intent === 'facebook' && (
-      <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-slate-900">Or connect a Page manually</h2>
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-base font-semibold text-slate-900">Or connect a Page manually</h2>
 
-        <form onSubmit={handleManualSubmit} className="mt-4 space-y-4" autoComplete="off">
-          <div>
-            <label htmlFor="page-id" className="block text-sm font-medium text-slate-700">
-              Page ID
-            </label>
-            <input
-              id="page-id"
-              className={`mt-1 ${inputClasses}`}
-              value={pageId}
-              onChange={(event) => setPageId(event.target.value)}
-              autoComplete="off"
-              required
-            />
-          </div>
-          <div>
-            <label htmlFor="page-name" className="block text-sm font-medium text-slate-700">
-              Page name
-            </label>
-            <input
-              id="page-name"
-              className={`mt-1 ${inputClasses}`}
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              autoComplete="off"
-              required
-            />
-          </div>
-          <div>
-            <label htmlFor="page-token" className="block text-sm font-medium text-slate-700">
-              Page access token
-            </label>
-            <input
-              id="page-token"
-              type="password"
-              className={`mt-1 font-mono ${inputClasses}`}
-              value={accessToken}
-              onChange={(event) => setAccessToken(event.target.value)}
-              autoComplete="new-password"
-              required
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={manualConnect.isPending}
-            className="inline-flex items-center rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {manualConnect.isPending ? 'Connecting…' : 'Connect manually'}
-          </button>
-        </form>
+          <form onSubmit={handleManualSubmit} className="mt-4 space-y-4" autoComplete="off">
+            <div>
+              <label htmlFor="page-id" className="block text-sm font-medium text-slate-700">
+                Page ID
+              </label>
+              <input
+                id="page-id"
+                className={`mt-1 ${inputClasses}`}
+                value={pageId}
+                onChange={(event) => setPageId(event.target.value)}
+                autoComplete="off"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="page-name" className="block text-sm font-medium text-slate-700">
+                Page name
+              </label>
+              <input
+                id="page-name"
+                className={`mt-1 ${inputClasses}`}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                autoComplete="off"
+                required
+              />
+            </div>
+            <div>
+              <label htmlFor="page-token" className="block text-sm font-medium text-slate-700">
+                Page access token
+              </label>
+              <input
+                id="page-token"
+                type="password"
+                className={`mt-1 font-mono ${inputClasses}`}
+                value={accessToken}
+                onChange={(event) => setAccessToken(event.target.value)}
+                autoComplete="new-password"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={manualConnect.isPending}
+              className="inline-flex items-center rounded-lg bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {manualConnect.isPending ? 'Connecting…' : 'Connect manually'}
+            </button>
+          </form>
 
-        {manualConnect.isError && (
-          <p role="alert" className="mt-4 text-sm font-medium text-red-600">
-            {manualConnect.error instanceof Error
-              ? manualConnect.error.message
-              : 'Connection failed.'}
-          </p>
-        )}
-        {manualConnect.isSuccess && (
-          <p role="status" className="mt-4 text-sm font-medium text-emerald-600">
-            Connected {manualConnect.data.displayName}.
-          </p>
-        )}
+          {manualConnect.isError && (
+            <p role="alert" className="mt-4 text-sm font-medium text-red-600">
+              {manualConnect.error instanceof Error
+                ? manualConnect.error.message
+                : 'Connection failed.'}
+            </p>
+          )}
+          {manualConnect.isSuccess && (
+            <p role="status" className="mt-4 text-sm font-medium text-emerald-600">
+              Connected {manualConnect.data.displayName}.
+            </p>
+          )}
 
-        <details className="mt-6 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
-          <summary className="cursor-pointer font-medium text-slate-900">
-            How do I get a Page access token?
-          </summary>
-          <ol className="mt-3 list-decimal space-y-2 pl-5">
-            <li>
-              In the{' '}
-              <a
-                href="https://developers.facebook.com/apps"
-                target="_blank"
-                rel="noreferrer noopener"
-                className="font-medium text-brand-600 hover:underline"
-              >
-                Meta App Dashboard
-              </a>
-              , open your app and add the &quot;Manage everything on your Page&quot; use case — this
-              is what makes{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_manage_posts</code>{' '}
-              selectable at all.
-            </li>
-            <li>
-              Open{' '}
-              <a
-                href="https://developers.facebook.com/tools/explorer/"
-                target="_blank"
-                rel="noreferrer noopener"
-                className="font-medium text-brand-600 hover:underline"
-              >
-                Graph API Explorer
-              </a>
-              , select your app, and request the{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_show_list</code>,{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                pages_read_engagement
-              </code>
-              , <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_manage_posts</code>
-              , and{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">business_management</code>{' '}
-              scopes.
-            </li>
-            <li>
-              Generate a User Access Token, then call{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">GET /me/accounts</code> to
-              find your Page and its short-lived Page access token.
-            </li>
-            <li>
-              Exchange it for a long-lived token:{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                GET /oauth/access_token
-              </code>{' '}
-              with{' '}
-              <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                grant_type=fb_exchange_token
-              </code>
-              . Paste the resulting token above.
-            </li>
-          </ol>
-        </details>
-      </div>
+          <details className="mt-6 rounded-lg bg-slate-50 p-4 text-sm text-slate-600">
+            <summary className="cursor-pointer font-medium text-slate-900">
+              How do I get a Page access token?
+            </summary>
+            <ol className="mt-3 list-decimal space-y-2 pl-5">
+              <li>
+                In the{' '}
+                <a
+                  href="https://developers.facebook.com/apps"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-medium text-brand-600 hover:underline"
+                >
+                  Meta App Dashboard
+                </a>
+                , open your app and add the &quot;Manage everything on your Page&quot; use case —
+                this is what makes{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_manage_posts</code>{' '}
+                selectable at all.
+              </li>
+              <li>
+                Open{' '}
+                <a
+                  href="https://developers.facebook.com/tools/explorer/"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-medium text-brand-600 hover:underline"
+                >
+                  Graph API Explorer
+                </a>
+                , select your app, and request the{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_show_list</code>,{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
+                  pages_read_engagement
+                </code>
+                ,{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">pages_manage_posts</code>
+                , and{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
+                  business_management
+                </code>{' '}
+                scopes.
+              </li>
+              <li>
+                Generate a User Access Token, then call{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">GET /me/accounts</code>{' '}
+                to find your Page and its short-lived Page access token.
+              </li>
+              <li>
+                Exchange it for a long-lived token:{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
+                  GET /oauth/access_token
+                </code>{' '}
+                with{' '}
+                <code className="rounded bg-slate-200 px-1 py-0.5 text-xs">
+                  grant_type=fb_exchange_token
+                </code>
+                . Paste the resulting token above.
+              </li>
+            </ol>
+          </details>
+        </div>
       )}
     </div>
   );

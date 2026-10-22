@@ -1,16 +1,12 @@
 import type { Job, Processor } from 'bullmq';
 import type { PlatformType } from '../platform-adapter.js';
+import { DEFAULT_JOB_RETENTION } from './jobOptions.js';
 import { publishToTargetQueueName } from './keys.js';
+import { PLATFORM_RATE_LIMITS, type RateLimiterConfig } from './rateLimits.js';
 import { getOrCreateWorker, getQueue } from './registry.js';
 
 export interface PublishToTargetJobData {
   postTargetId: string;
-}
-
-/** Per-(platform, account) limiter values — the actual numbers (e.g. Instagram's 100/24h) are filled in per platform adapter. */
-export interface RateLimiterConfig {
-  max: number;
-  duration: number; // ms
 }
 
 export async function enqueuePublishToTarget(
@@ -29,6 +25,7 @@ export async function enqueuePublishToTarget(
     jobId: data.postTargetId,
     attempts: 5,
     backoff: { type: 'exponential', delay: 5000 },
+    ...DEFAULT_JOB_RETENTION,
   });
 }
 
@@ -66,8 +63,11 @@ export function startPublishToTargetWorker(
   platform: PlatformType,
   externalAccountOrProjectId: string,
   processor: Processor<PublishToTargetJobData>,
-  limiter: RateLimiterConfig,
+  limiter: RateLimiterConfig = PLATFORM_RATE_LIMITS[platform],
 ) {
   const name = publishToTargetQueueName(platform, externalAccountOrProjectId);
-  return getOrCreateWorker<PublishToTargetJobData>(name, processor, { limiter });
+  // concurrency 1: uploads for one account go one at a time — a 500MB
+  // buffer per in-flight upload is the worker's dominant memory cost, and
+  // the platforms gain nothing from parallel uploads to the same account.
+  return getOrCreateWorker<PublishToTargetJobData>(name, processor, { limiter, concurrency: 1 });
 }

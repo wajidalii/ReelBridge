@@ -4,6 +4,8 @@ export interface VideoMetadata {
   durationSeconds?: number;
   width?: number;
   height?: number;
+  /** false when ffprobe parsed the container but found no video stream (e.g. an audio-only .mp4). */
+  hasVideoStream?: boolean;
 }
 
 export function probeVideoMetadata(filePath: string): Promise<VideoMetadata> {
@@ -18,6 +20,7 @@ export function probeVideoMetadata(filePath: string): Promise<VideoMetadata> {
         durationSeconds: data.format.duration ? Math.round(data.format.duration) : undefined,
         width: videoStream?.width,
         height: videoStream?.height,
+        hasVideoStream: videoStream !== undefined,
       });
     });
   });

@@ -1,16 +1,24 @@
 import { facebookPageAdapter } from '@reelbridge/platform-facebook';
-import { instagramBusinessAdapter } from '@reelbridge/platform-instagram';
+import {
+  assertPublishingHeadroom,
+  instagramBusinessAdapter,
+  isInstagramPublishingLimitError,
+} from '@reelbridge/platform-instagram';
 import { isQuotaExceededError, youtubeChannelAdapter } from '@reelbridge/platform-youtube';
 import type { PlatformAdapter, PublishToTargetJobData, StorageAdapter } from '@reelbridge/shared';
 import {
   createStorageAdapterFromEnv,
   decrypt,
   getDb,
+  getLogger,
   mediaAssets,
   platformConnections,
   postItems,
   postTargets,
+  publishLatenessSeconds,
   publishTargets,
+  quotaDeferralsTotal,
+  recordPublishOutcome,
 } from '@reelbridge/shared';
 import { DelayedError, type Job } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -32,6 +40,11 @@ const ADAPTERS_BY_PLATFORM: Partial<Record<string, PlatformAdapter>> = {
 // default exponential backoff (packages/shared/src/queues/publishToTarget.ts)
 // would.
 const YOUTUBE_QUOTA_BACKOFF_MS = 60 * 60 * 1000;
+
+// Instagram's content_publishing_limit is a rolling 24h window; a 30-minute
+// re-check is frequent enough to publish soon after room frees up without
+// re-polling the limit endpoint hundreds of times for one blocked account.
+const INSTAGRAM_LIMIT_BACKOFF_MS = 30 * 60 * 1000;
 
 // Generous enough that Meta's fetcher has plenty of headroom to pull the
 // file even under retry/backoff on their end, short enough that a leaked
@@ -103,6 +116,10 @@ async function buildTargetMetadata(
       iv: fbTarget.accessTokenIv,
       tag: fbTarget.accessTokenTag,
     });
+    // Issue #35: Meta's own per-account 100/24h counter includes posts made
+    // by other tools, so it's checked here (not just via our local limiter)
+    // before spending a container creation on an account with no headroom.
+    await assertPublishingHeadroom(publishTarget.externalId, accessToken);
     const videoUrl = await storage.getSignedUrl(
       mediaAsset.storageKey,
       INSTAGRAM_SIGNED_URL_TTL_SECONDS,
@@ -163,6 +180,8 @@ export async function processPublishToTarget(
 ): Promise<void> {
   const db = getDb();
   const { postTargetId } = job.data;
+  const log = getLogger().child({ component: 'publish', jobId: job.id, postTargetId });
+  const startedAt = Date.now();
 
   const [row] = await db
     .select({
@@ -189,10 +208,27 @@ export async function processPublishToTarget(
     throw new Error(`No platform adapter registered for ${publishTarget.platform}`);
   }
 
+  // Already terminal: a duplicate delivery (stalled-job redelivery after a
+  // crash that happened *after* the platform accepted the upload) must not
+  // publish the same video twice.
+  if (postTarget.status === 'published' || postTarget.status === 'native_scheduled') {
+    log.info({ status: postTarget.status }, 'skipping publish: row already terminal');
+    return;
+  }
+
   await db
     .update(postTargets)
     .set({ status: 'uploading', updatedAt: new Date() })
     .where(eq(postTargets.id, postTargetId));
+
+  // Scheduled-vs-actual delta is the Instagram reliability metric the PRD
+  // asks to track separately per platform.
+  if (!adapter.capabilities.nativeScheduling && postTarget.scheduledAt) {
+    publishLatenessSeconds.observe(
+      { platform: publishTarget.platform },
+      Math.max(0, (startedAt - postTarget.scheduledAt.getTime()) / 1000),
+    );
+  }
 
   const caption = postTarget.captionOverride ?? postItem.defaultCaption;
   const title = postTarget.titleOverride ?? postItem.defaultTitle ?? undefined;
@@ -243,8 +279,47 @@ export async function processPublishToTarget(
         updatedAt: new Date(),
       })
       .where(eq(postTargets.id, postTargetId));
+
+    recordPublishOutcome(
+      publishTarget.platform,
+      result.status === 'published' ? 'published' : 'native_scheduled',
+      (Date.now() - startedAt) / 1000,
+    );
+    log.info(
+      {
+        platform: publishTarget.platform,
+        status: result.status,
+        platformPostId: result.platformPostId,
+      },
+      'publish succeeded',
+    );
   } catch (error) {
+    if (isInstagramPublishingLimitError(error)) {
+      quotaDeferralsTotal.inc({ platform: publishTarget.platform });
+      recordPublishOutcome(publishTarget.platform, 'deferred');
+      log.warn(
+        {
+          platform: publishTarget.platform,
+          retryAt: new Date(Date.now() + INSTAGRAM_LIMIT_BACKOFF_MS),
+        },
+        'instagram publishing limit reached — deferring',
+      );
+      await db
+        .update(postTargets)
+        .set({
+          status: 'queued',
+          lastError:
+            'Instagram allows 100 API posts per 24 hours for this account — will retry automatically once there is room.',
+          updatedAt: new Date(),
+        })
+        .where(eq(postTargets.id, postTargetId));
+      await job.moveToDelayed(Date.now() + INSTAGRAM_LIMIT_BACKOFF_MS, token);
+      throw new DelayedError();
+    }
+
     if (isQuotaExceededError(error)) {
+      quotaDeferralsTotal.inc({ platform: publishTarget.platform });
+      recordPublishOutcome(publishTarget.platform, 'deferred');
       // Exhausting YouTube's 100/day videos.insert bucket isn't a per-item
       // failure — the video and caption are fine, the *account* is just out
       // of room until the bucket resets. Marking this row 'failed' (and
@@ -273,6 +348,8 @@ export async function processPublishToTarget(
       throw new DelayedError();
     }
 
+    recordPublishOutcome(publishTarget.platform, 'failed', (Date.now() - startedAt) / 1000);
+    log.error({ platform: publishTarget.platform, err: error }, 'publish failed');
     await db
       .update(postTargets)
       .set({

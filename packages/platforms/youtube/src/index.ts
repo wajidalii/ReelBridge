@@ -5,3 +5,4 @@ export * from './oauth.js';
 export * from './discovery.js';
 export * from './upload.js';
 export * from './adapter.js';
+export * from './health.js';

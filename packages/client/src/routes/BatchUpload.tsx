@@ -71,9 +71,15 @@ export function BatchUpload() {
     return batchCreation.current;
   }
 
-  async function finalizeUploadedRow(currentBatchId: string, localId: string, created: CreatedMedia) {
+  async function finalizeUploadedRow(
+    currentBatchId: string,
+    localId: string,
+    created: CreatedMedia,
+  ) {
     if (removedIds.current.has(localId)) {
-      fetch(`/api/media/${created.id}`, { method: 'DELETE', credentials: 'include' }).catch(() => {});
+      fetch(`/api/media/${created.id}`, { method: 'DELETE', credentials: 'include' }).catch(
+        () => {},
+      );
       return;
     }
 
@@ -87,7 +93,9 @@ export function BatchUpload() {
           method: 'DELETE',
           credentials: 'include',
         })
-          .then(() => fetch(`/api/media/${created.id}`, { method: 'DELETE', credentials: 'include' }))
+          .then(() =>
+            fetch(`/api/media/${created.id}`, { method: 'DELETE', credentials: 'include' }),
+          )
           .catch(() => {});
         return;
       }
@@ -146,7 +154,9 @@ export function BatchUpload() {
         acceptedRows.map((row) => ({ file: row.file, clientId: row.localId })),
         (fraction) => {
           setRows((prev) =>
-            prev.map((row) => (acceptedIds.has(row.localId) ? { ...row, progress: fraction } : row)),
+            prev.map((row) =>
+              acceptedIds.has(row.localId) ? { ...row, progress: fraction } : row,
+            ),
           );
         },
       );
@@ -301,7 +311,8 @@ export function BatchUpload() {
                       row.width && row.height ? `${row.width}×${row.height}` : null,
                     ]
                       .filter(Boolean)
-                      .join(' · ') || 'Uploaded')}
+                      .join(' · ') ||
+                      'Uploaded')}
                   {row.status === 'error' && (
                     <span role="alert" className="font-medium text-red-600">
                       {row.error ?? 'Upload failed.'}

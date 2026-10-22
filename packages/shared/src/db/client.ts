@@ -20,7 +20,19 @@ let dbInstance: NodePgDatabase<typeof schema> | undefined;
  */
 export function getPool(): Pool {
   if (!poolInstance) {
-    poolInstance = new Pool({ connectionString: loadDatabaseUrl() });
+    poolInstance = new Pool({
+      connectionString: loadDatabaseUrl(),
+      // Bounded so N API/worker replicas can't exhaust Postgres's
+      // max_connections between them; idle connections are released so a
+      // quiet replica doesn't hold its full share forever.
+      max: Number(process.env.DATABASE_POOL_MAX ?? 10),
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      ssl:
+        process.env.DATABASE_SSL === 'true'
+          ? { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false' }
+          : undefined,
+    });
   }
   return poolInstance;
 }

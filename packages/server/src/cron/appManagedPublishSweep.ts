@@ -1,5 +1,12 @@
-import { enqueuePublishToTarget, getDb, postTargets, publishTargets } from '@reelbridge/shared';
-import { and, eq, lte } from 'drizzle-orm';
+import {
+  appManagedLateTotal,
+  enqueuePublishToTarget,
+  getDb,
+  getLogger,
+  postTargets,
+  publishTargets,
+} from '@reelbridge/shared';
+import { and, eq, inArray, lte, sql } from 'drizzle-orm';
 
 // How late an awaiting_app_managed_publish row can be found past its
 // scheduled_at before this sweep treats it as an alertable event rather than
@@ -24,38 +31,59 @@ function getLateThresholdMs(): number {
  * in-memory, so redelivery/durability falls out of the design rather than
  * needing separate handling.
  *
- * Enqueue-only, per the architecture — the actual container create/poll/
- * publish sequence happens in the worker's processPublishToTarget. Rows found
- * more than the configured threshold past their scheduled_at are logged as a
- * distinct, observable alert event before being enqueued same as any other
- * due row — still published, just flagged as late (design.md/PROJECT.md:
- * "resilient" for Instagram means "recovers and publishes late," not "never
- * late").
+ * Due rows are *claimed* with a single UPDATE … RETURNING (status flipped to
+ * 'queued' before the enqueue) so two API replicas ticking at the same
+ * moment can't both pick up the same row. If the enqueue then fails the row
+ * is put back to awaiting_app_managed_publish for the next tick.
+ *
+ * Rows found more than the configured threshold past their scheduled_at are
+ * logged and counted as a distinct, observable alert event before being
+ * enqueued same as any other due row — still published, just flagged as
+ * late (design.md/PROJECT.md: "resilient" for Instagram means "recovers and
+ * publishes late," not "never late").
  */
 export async function enqueueDueAppManagedPublishJobs(): Promise<void> {
   const db = getDb();
   const now = new Date();
+  const log = getLogger();
 
-  const dueRows = await db
-    .select({
-      id: postTargets.id,
-      scheduledAt: postTargets.scheduledAt,
-      platform: publishTargets.platform,
-      externalId: publishTargets.externalId,
-    })
-    .from(postTargets)
-    .innerJoin(publishTargets, eq(postTargets.publishTargetId, publishTargets.id))
+  const claimed = await db
+    .update(postTargets)
+    .set({ status: 'queued', updatedAt: now })
     .where(
       and(
         eq(postTargets.status, 'awaiting_app_managed_publish'),
         lte(postTargets.scheduledAt, now),
       ),
-    );
+    )
+    .returning({
+      id: postTargets.id,
+      scheduledAt: postTargets.scheduledAt,
+      publishTargetId: postTargets.publishTargetId,
+    });
+  if (claimed.length === 0) return;
+
+  const targetIds = [...new Set(claimed.map((row) => row.publishTargetId))];
+  const targets = await db
+    .select({
+      id: publishTargets.id,
+      platform: publishTargets.platform,
+      externalId: publishTargets.externalId,
+    })
+    .from(publishTargets)
+    .where(inArray(publishTargets.id, targetIds));
+  const targetById = new Map(targets.map((target) => [target.id, target]));
 
   await Promise.all(
-    dueRows.map(async (row) => {
+    claimed.map(async (row) => {
+      const target = targetById.get(row.publishTargetId);
+      if (!target) return;
+
       const lateMs = row.scheduledAt ? now.getTime() - row.scheduledAt.getTime() : 0;
       if (lateMs > getLateThresholdMs()) {
+        appManagedLateTotal.inc({ platform: target.platform });
+        // Kept on console.error too: this is the alert hook from #34 that
+        // existing log-based alerting (and the integration test) matches on.
         console.error('[app-managed-publish-late]', {
           postTargetId: row.id,
           scheduledAt: row.scheduledAt?.toISOString(),
@@ -63,11 +91,18 @@ export async function enqueueDueAppManagedPublishJobs(): Promise<void> {
         });
       }
 
-      await enqueuePublishToTarget(row.platform, row.externalId, { postTargetId: row.id });
-      await db
-        .update(postTargets)
-        .set({ status: 'queued', updatedAt: new Date() })
-        .where(eq(postTargets.id, row.id));
+      try {
+        await enqueuePublishToTarget(target.platform, target.externalId, { postTargetId: row.id });
+      } catch (error) {
+        log.error(
+          { err: error, postTargetId: row.id },
+          'failed to enqueue due app-managed publish',
+        );
+        await db
+          .update(postTargets)
+          .set({ status: 'awaiting_app_managed_publish', updatedAt: sql`now()` })
+          .where(and(eq(postTargets.id, row.id), eq(postTargets.status, 'queued')));
+      }
     }),
   );
 }

@@ -180,7 +180,9 @@ describe.skipIf(!ready)('POST /api/targets/:id/revalidate', () => {
     expect(res.status).toBe(202);
 
     const queue = getQueue<{ publishTargetId: string }>(HEALTH_CHECK_QUEUE_NAME);
-    const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
+    // Manual re-checks are enqueued with a priority, which BullMQ v5 keeps in
+    // its own 'prioritized' state rather than 'waiting'.
+    const jobs = await queue.getJobs(['waiting', 'prioritized', 'delayed', 'active']);
     const enqueuedIds = jobs.map((job) => job.data.publishTargetId);
     expect(enqueuedIds).toContain(target.id);
 

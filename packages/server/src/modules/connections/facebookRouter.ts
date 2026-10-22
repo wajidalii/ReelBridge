@@ -8,6 +8,7 @@ import {
 } from '@reelbridge/platform-facebook';
 import { Router, type Response } from 'express';
 import { requireAuth } from '../auth/middleware.js';
+import { clearOAuthNonceCookie, readOAuthNonceCookie, setOAuthNonceCookie } from './oauthNonce.js';
 import { signOAuthState, verifyOAuthState } from './oauthState.js';
 import { upsertFacebookConnection } from './upsertFacebookTargets.js';
 
@@ -44,12 +45,16 @@ export const facebookConnectionsRouter = Router();
 facebookConnectionsRouter.get('/start', requireAuth, (req, res) => {
   const config = loadFacebookOAuthConfig();
   const intent = req.query.intent === 'instagram' ? 'instagram' : 'facebook';
+  const nonce = randomUUID();
   const state = signOAuthState({
     userId: req.userId!,
-    nonce: randomUUID(),
+    nonce,
     platform: 'facebook',
     intent,
   });
+  // The nonce is also set as a cookie so the callback can confirm the browser
+  // finishing the flow is the one that started it (see oauthNonce.ts).
+  setOAuthNonceCookie(res, 'facebook', nonce);
   res.redirect(buildFacebookOAuthUrl(config, state));
 });
 
@@ -82,6 +87,16 @@ facebookConnectionsRouter.get('/callback', async (req, res) => {
     redirectWithError(res, clientUrl, 'Invalid state', statePayload.intent);
     return;
   }
+  if (readOAuthNonceCookie(req, 'facebook') !== statePayload.nonce) {
+    redirectWithError(
+      res,
+      clientUrl,
+      'This sign-in link was not started from this browser. Please try connecting again.',
+      statePayload.intent,
+    );
+    return;
+  }
+  clearOAuthNonceCookie(res, 'facebook');
 
   try {
     const config = loadFacebookOAuthConfig();

@@ -382,12 +382,10 @@ describe.skipIf(!dbReachable)('batches API', () => {
     const [row] = await db.select().from(postItems).where(eq(postItems.id, itemId));
     expect(row).toBeUndefined();
 
-    await expect(
-      db.delete(mediaAssets).where(eq(mediaAssets.id, media.id)),
-    ).resolves.not.toThrow();
+    await expect(db.delete(mediaAssets).where(eq(mediaAssets.id, media.id))).resolves.not.toThrow();
   });
 
-  it('DELETE /:id/items/:itemId is 404 for another user\'s item', async () => {
+  it("DELETE /:id/items/:itemId is 404 for another user's item", async () => {
     const { user: owner, media } = await createUserWithMediaAndTarget(
       `${TEST_EMAIL_PREFIX}delete-item-owner-${Date.now()}@example.com`,
     );

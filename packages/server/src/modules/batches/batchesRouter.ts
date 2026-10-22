@@ -11,10 +11,11 @@ import {
   type Database,
   type ValidationSeverity,
 } from '@reelbridge/shared';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/middleware.js';
+import { checkUsageLimit } from '../billing/checkUsageLimit.js';
 import {
   assertBatchOwnership,
   assertMediaAssetOwnership,
@@ -27,7 +28,59 @@ import { PREVIEW_ADAPTERS_BY_PLATFORM } from './platformAdapters.js';
 
 export const batchesRouter = Router();
 
-const createBatchSchema = z.object({ name: z.string().min(1) });
+const createBatchSchema = z.object({ name: z.string().trim().min(1).max(200) });
+
+const listQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+/** Newest first, with per-batch item/target counts so the list page needs no N+1. */
+batchesRouter.get('/', requireAuth, async (req, res) => {
+  const parsed = listQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid query parameters' });
+    return;
+  }
+  const limit = parsed.data.limit ?? 25;
+  const offset = parsed.data.offset ?? 0;
+  const db = getDb();
+
+  const rows = await db
+    .select({
+      id: postBatches.id,
+      name: postBatches.name,
+      status: postBatches.status,
+      createdAt: postBatches.createdAt,
+      itemCount: sql<number>`count(distinct ${postItems.id})`,
+      targetCount: sql<number>`count(${postTargets.id})`,
+      publishedCount: sql<number>`count(${postTargets.id}) filter (where ${postTargets.status} = 'published')`,
+      failedCount: sql<number>`count(${postTargets.id}) filter (where ${postTargets.status} = 'failed')`,
+    })
+    .from(postBatches)
+    .leftJoin(postItems, eq(postItems.batchId, postBatches.id))
+    .leftJoin(postTargets, eq(postTargets.postItemId, postItems.id))
+    .where(eq(postBatches.userId, req.userId!))
+    .groupBy(postBatches.id)
+    .orderBy(desc(postBatches.createdAt))
+    .limit(limit)
+    .offset(offset);
+  const [total] = await db
+    .select({ value: count() })
+    .from(postBatches)
+    .where(eq(postBatches.userId, req.userId!));
+
+  res.json({
+    batches: rows.map((row) => ({
+      ...row,
+      itemCount: Number(row.itemCount),
+      targetCount: Number(row.targetCount),
+      publishedCount: Number(row.publishedCount),
+      failedCount: Number(row.failedCount),
+    })),
+    total: Number(total?.value ?? 0),
+  });
+});
 
 batchesRouter.post('/', requireAuth, async (req, res) => {
   const parsed = createBatchSchema.safeParse(req.body);
@@ -81,6 +134,35 @@ batchesRouter.get(
         targets: targets.filter((target) => target.postItemId === item.id),
       })),
     });
+  },
+);
+
+/**
+ * Only draft batches can be deleted wholesale: once publishing has started
+ * there are platform-side posts/jobs the rows describe, and the dashboard's
+ * retry/permalink history would silently vanish with them.
+ */
+batchesRouter.delete(
+  '/:id',
+  requireAuth,
+  requireOwnership('id', assertBatchOwnership),
+  async (req, res) => {
+    const db = getDb();
+    const batchId = req.params.id as string;
+    const [batch] = await db
+      .select({ status: postBatches.status })
+      .from(postBatches)
+      .where(eq(postBatches.id, batchId));
+    if (!batch) {
+      res.status(404).json({ error: 'Batch not found' });
+      return;
+    }
+    if (batch.status !== 'draft') {
+      res.status(409).json({ error: 'Only draft batches can be deleted' });
+      return;
+    }
+    await db.delete(postBatches).where(eq(postBatches.id, batchId));
+    res.status(204).send();
   },
 );
 
@@ -175,12 +257,13 @@ const assignTargetsSchema = z.object({
     .array(
       z.object({
         publish_target_id: z.string().uuid(),
-        caption_override: z.string().optional(),
-        title_override: z.string().optional(),
+        caption_override: z.string().max(70_000).optional(),
+        title_override: z.string().max(500).optional(),
         scheduled_at: z.string().datetime().optional(),
       }),
     )
-    .min(1),
+    .min(1)
+    .max(50),
 });
 
 batchesRouter.post(
@@ -206,6 +289,10 @@ batchesRouter.post(
       res.status(404).json({ error: 'Post item not found in this batch' });
       return;
     }
+
+    // Plan enforcement point (usage-limit check function from the plan):
+    // every (item, target) pair is one post against the monthly allowance.
+    await checkUsageLimit(req.userId!, 'publish_post', parsed.data.targets.length);
 
     const created: (typeof postTargets.$inferSelect)[] = [];
     const rejected: Array<{ publish_target_id: string; error: string }> = [];

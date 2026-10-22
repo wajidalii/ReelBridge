@@ -1,4 +1,5 @@
 import type { Job, Processor } from 'bullmq';
+import { DEFAULT_JOB_RETENTION } from './jobOptions.js';
 import { getOrCreateWorker, getQueue } from './registry.js';
 
 /** Read-only checks, not subject to per-account write-rate limits, so one shared queue suffices (same reasoning as poll-status). */
@@ -19,12 +20,20 @@ export async function enqueueHealthCheck(
   data: HealthCheckJobData,
 ): Promise<Job<HealthCheckJobData>> {
   const queue = getQueue<HealthCheckJobData>(HEALTH_CHECK_QUEUE_NAME);
+  // Manual re-checks get their own job id so a user's "Revalidate" click is
+  // never silently swallowed by a sweep job already queued for that target.
   return queue.add('health-check', data, {
+    jobId: `health-${data.trigger === 'manual' ? 'manual' : 'sweep'}-${data.publishTargetId}`,
+    priority: data.trigger === 'manual' ? 1 : 10,
     attempts: 2,
     backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: true,
+    removeOnFail: DEFAULT_JOB_RETENTION.removeOnFail,
   });
 }
 
 export function startHealthCheckWorker(processor: Processor<HealthCheckJobData>) {
-  return getOrCreateWorker<HealthCheckJobData>(HEALTH_CHECK_QUEUE_NAME, processor);
+  return getOrCreateWorker<HealthCheckJobData>(HEALTH_CHECK_QUEUE_NAME, processor, {
+    concurrency: 5,
+  });
 }

@@ -8,9 +8,11 @@ import {
   mediaAssets,
   type ValidationWarning,
 } from '@reelbridge/shared';
-import { eq } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { Router } from 'express';
 import multer from 'multer';
+import { z } from 'zod';
+import { uploadRateLimiter } from '../../middleware/security.js';
 import { requireAuth } from '../auth/middleware.js';
 import { PREVIEW_ADAPTERS_BY_PLATFORM } from '../batches/platformAdapters.js';
 import { assertMediaAssetOwnership } from '../ownership/assertOwnership.js';
@@ -22,13 +24,29 @@ const MAX_FILE_SIZE_BYTES = Number(process.env.MEDIA_MAX_FILE_SIZE_BYTES ?? 500 
 /** Hard safety-net cap at the multer layer only, well above the business limit. */
 const MULTER_HARD_CAP_BYTES = 2 * 1024 * 1024 * 1024;
 
+/** Max files in one multipart request; the UI uploads in batches anyway. */
+const MAX_FILES_PER_REQUEST = 20;
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
-    filename: (_req, file, callback) => callback(null, `${randomUUID()}-${file.originalname}`),
+    // Never derive the temp filename from the client-supplied name: multer
+    // path.joins it under the destination, so a crafted originalname like
+    // `../../x.mp4` could write outside tmpdir. The original name is kept
+    // separately in the DB row (the caption-matching feature needs it) —
+    // it just never touches the filesystem.
+    filename: (_req, _file, callback) => callback(null, `${randomUUID()}.upload`),
   }),
-  limits: { fileSize: MULTER_HARD_CAP_BYTES },
+  limits: { fileSize: MULTER_HARD_CAP_BYTES, files: MAX_FILES_PER_REQUEST, fields: 50 },
 });
+
+/** Keeps the stored display name sane: strips any path component and control characters, bounds length. */
+function sanitizeOriginalFilename(name: string): string {
+  const base = name.split(/[\\/]/).pop() ?? name;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return (cleaned || 'upload.mp4').slice(0, 255);
+}
 
 export const mediaRouter = Router();
 
@@ -62,7 +80,28 @@ function normalizeToStringArray(value: unknown): string[] {
   return (Array.isArray(value) ? value : [value]).map(String);
 }
 
-mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
+const listQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+});
+
+mediaRouter.get('/', requireAuth, async (req, res) => {
+  const parsed = listQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid query parameters' });
+    return;
+  }
+  const rows = await getDb()
+    .select()
+    .from(mediaAssets)
+    .where(eq(mediaAssets.userId, req.userId!))
+    .orderBy(desc(mediaAssets.uploadedAt))
+    .limit(parsed.data.limit ?? 50)
+    .offset(parsed.data.offset ?? 0);
+  res.json(rows);
+});
+
+mediaRouter.post('/', requireAuth, uploadRateLimiter, upload.array('files'), async (req, res) => {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (files.length === 0) {
     res.status(400).json({ error: 'No files uploaded (expected multipart field "files")' });
@@ -77,25 +116,35 @@ mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
 
   for (const [index, file] of files.entries()) {
     const clientId = clientIds[index];
+    const originalFilename = sanitizeOriginalFilename(file.originalname);
     try {
-      if (!file.originalname.toLowerCase().endsWith('.mp4')) {
-        failed.push({
-          originalFilename: file.originalname,
-          error: 'Only .mp4 files are accepted',
-          clientId,
-        });
+      if (!originalFilename.toLowerCase().endsWith('.mp4')) {
+        failed.push({ originalFilename, error: 'Only .mp4 files are accepted', clientId });
         continue;
       }
       if (file.size > MAX_FILE_SIZE_BYTES) {
         failed.push({
-          originalFilename: file.originalname,
+          originalFilename,
           error: `File exceeds the ${MAX_FILE_SIZE_BYTES} byte size limit`,
           clientId,
         });
         continue;
       }
 
-      const metadata: VideoMetadata = await probeVideoMetadata(file.path).catch(() => ({}));
+      // The extension is client-controlled; ffprobe is the real content
+      // check. Anything ffprobe can't parse as a video stream is rejected
+      // rather than stored and handed to a platform that will fail later.
+      let metadata: VideoMetadata;
+      try {
+        metadata = await probeVideoMetadata(file.path);
+      } catch {
+        failed.push({ originalFilename, error: 'File is not a readable video', clientId });
+        continue;
+      }
+      if (!metadata.hasVideoStream) {
+        failed.push({ originalFilename, error: 'File contains no video stream', clientId });
+        continue;
+      }
       const mediaAssetId = randomUUID();
       const storageKey = buildMediaStorageKey(req.userId!, mediaAssetId);
 
@@ -106,7 +155,7 @@ mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
         .values({
           id: mediaAssetId,
           userId: req.userId!,
-          originalFilename: file.originalname,
+          originalFilename,
           storageKey,
           fileSizeBytes: file.size,
           durationSeconds: metadata.durationSeconds,
@@ -128,7 +177,7 @@ mediaRouter.post('/', requireAuth, upload.array('files'), async (req, res) => {
       }
     } catch (error) {
       failed.push({
-        originalFilename: file.originalname,
+        originalFilename,
         error: error instanceof Error ? error.message : 'Upload failed',
         clientId,
       });

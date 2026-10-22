@@ -1,5 +1,6 @@
 import type { PlatformType } from '@reelbridge/shared';
 import { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTargets } from '../api/targets.js';
 import {
   usePosts,
@@ -144,8 +145,15 @@ function RetryButton({ postId }: { postId: string }) {
 
 export function PostsDashboard() {
   const { data: targets } = useTargets();
+  const [searchParams] = useSearchParams();
+  // Deep links like /posts?status=failed (from the home overview) pre-fill the filter.
+  const initialStatus = searchParams.get('status');
   const [platform, setPlatform] = useState<PlatformType | ''>('');
-  const [status, setStatus] = useState<PostTargetStatus | ''>('');
+  const [status, setStatus] = useState<PostTargetStatus | ''>(
+    initialStatus && STATUS_FILTER_OPTIONS.includes(initialStatus as PostTargetStatus)
+      ? (initialStatus as PostTargetStatus)
+      : '',
+  );
   const [target, setTarget] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');

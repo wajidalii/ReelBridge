@@ -21,7 +21,10 @@ describe('fetchUserChannels', () => {
       expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer token-123');
       return jsonResponse({
         items: [
-          { id: 'chan-1', snippet: { title: 'Chan One', thumbnails: { default: { url: 'https://x/1.jpg' } } } },
+          {
+            id: 'chan-1',
+            snippet: { title: 'Chan One', thumbnails: { default: { url: 'https://x/1.jpg' } } },
+          },
           { id: 'chan-2', snippet: {} },
         ],
       });
