@@ -115,7 +115,7 @@ describe.skipIf(!ready)('enqueueDueHealthCheckJobs', () => {
     await getPool().end();
   });
 
-  it('enqueues only active facebook_page targets, not inactive or non-Facebook ones', async () => {
+  it('enqueues active targets on every platform, but not inactive ones', async () => {
     const active = await createTarget(`${TEST_EMAIL_PREFIX}active-${Date.now()}@example.com`, {
       platform: 'facebook_page',
       isActive: true,
@@ -135,12 +135,15 @@ describe.skipIf(!ready)('enqueueDueHealthCheckJobs', () => {
     await enqueueDueHealthCheckJobs();
 
     const queue = getQueue<{ publishTargetId: string }>(HEALTH_CHECK_QUEUE_NAME);
-    const jobs = await queue.getJobs(['waiting', 'delayed', 'active']);
+    // Sweep jobs carry a (low) priority, which BullMQ v5 keeps in its own
+    // 'prioritized' state rather than 'waiting'.
+    const jobs = await queue.getJobs(['waiting', 'prioritized', 'delayed', 'active']);
     const enqueuedIds = jobs.map((job) => job.data.publishTargetId);
 
     expect(enqueuedIds).toContain(active.id);
     expect(enqueuedIds).not.toContain(inactive.id);
-    expect(enqueuedIds).not.toContain(otherPlatform.id);
+    // Issue #36: health checks cover Instagram/YouTube too, not just Facebook.
+    expect(enqueuedIds).toContain(otherPlatform.id);
 
     const testTargetIds = new Set([active.id, inactive.id, otherPlatform.id]);
     await Promise.all(

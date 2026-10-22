@@ -8,6 +8,13 @@
       "when": 1785516022092,
       "tag": "0000_jazzy_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792670252240,
+      "tag": "0001_security_indexes_auth_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -23,10 +23,19 @@ function loadJwtSecret(): string {
 }
 
 /** Short-lived signed state embedding userId+nonce — CSRF protection for the OAuth redirect round-trip. */
+const AUDIENCE = 'reelbridge-oauth-state';
+
 export function signOAuthState(payload: OAuthStatePayload): string {
-  return jwt.sign(payload, loadJwtSecret(), { expiresIn: '10m' });
+  return jwt.sign(payload, loadJwtSecret(), {
+    expiresIn: '10m',
+    algorithm: 'HS256',
+    audience: AUDIENCE,
+  });
 }
 
 export function verifyOAuthState(token: string): OAuthStatePayload {
-  return jwt.verify(token, loadJwtSecret()) as OAuthStatePayload;
+  return jwt.verify(token, loadJwtSecret(), {
+    algorithms: ['HS256'],
+    audience: AUDIENCE,
+  }) as OAuthStatePayload;
 }

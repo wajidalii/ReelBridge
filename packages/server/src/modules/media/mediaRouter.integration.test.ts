@@ -228,9 +228,7 @@ describe.skipIf(!ready)('media upload API', () => {
       .attach('files', TEST_VIDEO_PATH);
     const mediaId = uploadRes.body.created[0].id as string;
 
-    const res = await request(app)
-      .get(`/api/media/${mediaId}/constraints`)
-      .set('Cookie', cookie);
+    const res = await request(app).get(`/api/media/${mediaId}/constraints`).set('Cookie', cookie);
 
     expect(res.status).toBe(200);
     expect(res.body.mediaAssetId).toBe(mediaId);

@@ -2,7 +2,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ApiError } from '../api/client.js';
-import { publishBatch, usePreview, type PreviewRow, type PublishBatchResponse } from '../api/batches.js';
+import {
+  publishBatch,
+  usePreview,
+  type PreviewRow,
+  type PublishBatchResponse,
+} from '../api/batches.js';
 
 const PLATFORM_LABELS: Record<string, string> = {
   facebook_page: 'Facebook',
@@ -62,7 +67,10 @@ export function BatchPreview() {
   );
   const previousSignatureRef = useRef<string | null>(null);
   useEffect(() => {
-    if (previousSignatureRef.current !== null && previousSignatureRef.current !== warningsSignature) {
+    if (
+      previousSignatureRef.current !== null &&
+      previousSignatureRef.current !== warningsSignature
+    ) {
       setAcknowledged(false);
     }
     previousSignatureRef.current = warningsSignature;
@@ -82,9 +90,14 @@ export function BatchPreview() {
   // new pending work (or, symmetrically, shouldn't leave the button enabled
   // once every pending row has been scheduled).
   const hasBlocking = pendingRows.some((row) => row.blocking);
-  const hasNonBlockingWarnings = pendingRows.some((row) => !row.blocking && row.warnings.length > 0);
+  const hasNonBlockingWarnings = pendingRows.some(
+    (row) => !row.blocking && row.warnings.length > 0,
+  );
   const publishDisabled =
-    hasBlocking || (hasNonBlockingWarnings && !acknowledged) || publishing || pendingRows.length === 0;
+    hasBlocking ||
+    (hasNonBlockingWarnings && !acknowledged) ||
+    publishing ||
+    pendingRows.length === 0;
 
   async function handlePublish() {
     if (!batchId) return;
@@ -118,8 +131,8 @@ export function BatchPreview() {
 
       {rows.length === 0 && (
         <p className="mt-6 text-sm text-slate-500">
-          No targets have been assigned yet — go back and assign at least one target to preview
-          it here.
+          No targets have been assigned yet — go back and assign at least one target to preview it
+          here.
         </p>
       )}
 
@@ -128,19 +141,34 @@ export function BatchPreview() {
           <table className="min-w-full divide-y divide-slate-200">
             <thead className="bg-slate-50">
               <tr>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold text-slate-700"
+                >
                   Video
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold text-slate-700"
+                >
                   Target
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold text-slate-700"
+                >
                   Caption / title
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold text-slate-700"
+                >
                   When
                 </th>
-                <th scope="col" className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-semibold text-slate-700"
+                >
                   Warnings
                 </th>
               </tr>
@@ -182,8 +210,8 @@ export function BatchPreview() {
                     {row.schedulingMode === 'awaiting_app_managed_publish' && (
                       <p className="mt-1 text-xs text-slate-600">
                         {row.targetDisplayName ?? 'This target'} doesn&apos;t support native
-                        scheduling — ReelBridge will trigger this post itself at the scheduled
-                        time rather than the platform holding it.
+                        scheduling — ReelBridge will trigger this post itself at the scheduled time
+                        rather than the platform holding it.
                       </p>
                     )}
                     {row.schedulingMode === 'native_scheduled' && row.scheduledAt && (

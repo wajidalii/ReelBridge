@@ -3,12 +3,18 @@ import { validatePageToken } from '@reelbridge/platform-facebook';
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/middleware.js';
+import { checkUsageLimit } from '../billing/checkUsageLimit.js';
 import { getOrCreateManualFacebookConnection } from './manualFacebookTarget.js';
 
 const manualTargetSchema = z.object({
-  page_id: z.string().min(1),
-  name: z.string().min(1),
-  access_token: z.string().min(1),
+  // Numeric IDs in practice, but Graph API also accepts Page usernames in the
+  // path; the character class just keeps the value a single safe path segment.
+  page_id: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9._-]{1,64}$/, 'Invalid Page ID'),
+  name: z.string().trim().min(1).max(200),
+  access_token: z.string().trim().min(1).max(2048),
 });
 
 export const facebookTargetsRouter = Router();
@@ -20,6 +26,8 @@ facebookTargetsRouter.post('/manual', requireAuth, async (req, res) => {
     return;
   }
   const { page_id: pageId, name, access_token: accessToken } = parsed.data;
+
+  await checkUsageLimit(req.userId!, 'connect_target');
 
   const validated = await validatePageToken(pageId, accessToken);
   if (!validated) {

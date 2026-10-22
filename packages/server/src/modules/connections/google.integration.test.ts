@@ -7,6 +7,12 @@ import { getDb, getPool, platformConnections, publishTargets, users } from '@ree
 import { createApp } from '../../app.js';
 import { signOAuthState, verifyOAuthState } from './oauthState.js';
 
+// The callback only proceeds when the browser presents the nonce cookie set
+// by /start (oauthNonce.ts) — tests that mint a state directly mirror that.
+function nonceCookieFor(state: string): string {
+  return `reelbridge_oauth_google=${verifyOAuthState(state).nonce}`;
+}
+
 // `||=` rather than `??=`: a real .env commonly has these as empty-string
 // placeholders (see .env.example), which `??=` would not treat as "unset".
 process.env.JWT_SECRET ||= 'test-jwt-secret-for-integration-tests-only';
@@ -86,7 +92,10 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
           items: [
             {
               id: 'channel-1',
-              snippet: { title: 'My Channel', thumbnails: { default: { url: 'https://x/thumb.jpg' } } },
+              snippet: {
+                title: 'My Channel',
+                thumbnails: { default: { url: 'https://x/thumb.jpg' } },
+              },
             },
           ],
         });
@@ -101,9 +110,9 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
       platform: 'google',
       intent: 'youtube',
     });
-    const res = await request(app).get(
-      `/api/connections/google/callback?code=auth-code-123&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(`/api/connections/google/callback?code=auth-code-123&state=${encodeURIComponent(state)}`)
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -126,7 +135,9 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
     const [connection] = await getDb()
       .select()
       .from(platformConnections)
-      .where(and(eq(platformConnections.userId, userId), eq(platformConnections.platform, 'google')));
+      .where(
+        and(eq(platformConnections.userId, userId), eq(platformConnections.platform, 'google')),
+      );
     expect(connection).toBeDefined();
     expect(connection?.refreshTokenCiphertext).toBeTruthy();
     // Tokens must be encrypted at rest, never stored/returned in plaintext.
@@ -137,7 +148,10 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
 
   it('keeps the prior refresh token when a reconnect omits a new one', async () => {
     const email = `${TEST_EMAIL_PREFIX}reconnect-${Date.now()}@example.com`;
-    const [user] = await getDb().insert(users).values({ email, passwordHash: 'unused' }).returning();
+    const [user] = await getDb()
+      .insert(users)
+      .values({ email, passwordHash: 'unused' })
+      .returning();
     if (!user) throw new Error('failed to insert test user');
 
     const firstFetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -162,14 +176,18 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
       platform: 'google',
       intent: 'youtube',
     });
-    await request(app).get(
-      `/api/connections/google/callback?code=first-code&state=${encodeURIComponent(firstState)}`,
-    );
+    await request(app)
+      .get(
+        `/api/connections/google/callback?code=first-code&state=${encodeURIComponent(firstState)}`,
+      )
+      .set('Cookie', nonceCookieFor(firstState));
 
     const [connectionAfterFirst] = await getDb()
       .select()
       .from(platformConnections)
-      .where(and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')));
+      .where(
+        and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')),
+      );
     const refreshTokenAfterFirst = connectionAfterFirst?.refreshTokenCiphertext;
     expect(refreshTokenAfterFirst).toBeTruthy();
 
@@ -192,15 +210,19 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
       platform: 'google',
       intent: 'youtube',
     });
-    const res = await request(app).get(
-      `/api/connections/google/callback?code=second-code&state=${encodeURIComponent(secondState)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/google/callback?code=second-code&state=${encodeURIComponent(secondState)}`,
+      )
+      .set('Cookie', nonceCookieFor(secondState));
     expect(res.status).toBe(302);
 
     const [connectionAfterSecond] = await getDb()
       .select()
       .from(platformConnections)
-      .where(and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')));
+      .where(
+        and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')),
+      );
     expect(connectionAfterSecond?.refreshTokenCiphertext).toBe(refreshTokenAfterFirst);
 
     await getDb().delete(users).where(eq(users.id, user.id));
@@ -208,7 +230,10 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
 
   it('treats zero discovered channels as a normal outcome, not an error', async () => {
     const email = `${TEST_EMAIL_PREFIX}no-channels-${Date.now()}@example.com`;
-    const [user] = await getDb().insert(users).values({ email, passwordHash: 'unused' }).returning();
+    const [user] = await getDb()
+      .insert(users)
+      .values({ email, passwordHash: 'unused' })
+      .returning();
     if (!user) throw new Error('failed to insert test user');
 
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -233,9 +258,11 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
       platform: 'google',
       intent: 'youtube',
     });
-    const res = await request(app).get(
-      `/api/connections/google/callback?code=no-channels-code&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/google/callback?code=no-channels-code&state=${encodeURIComponent(state)}`,
+      )
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -245,7 +272,9 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
     const [connection] = await getDb()
       .select()
       .from(platformConnections)
-      .where(and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')));
+      .where(
+        and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')),
+      );
     expect(connection).toBeDefined();
 
     await getDb().delete(users).where(eq(users.id, user.id));
@@ -253,7 +282,10 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
 
   it('fails the connect flow rather than persisting an unusable connection when Google omits refresh_token on a first-ever grant', async () => {
     const email = `${TEST_EMAIL_PREFIX}no-refresh-${Date.now()}@example.com`;
-    const [user] = await getDb().insert(users).values({ email, passwordHash: 'unused' }).returning();
+    const [user] = await getDb()
+      .insert(users)
+      .values({ email, passwordHash: 'unused' })
+      .returning();
     if (!user) throw new Error('failed to insert test user');
 
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -274,9 +306,11 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
       platform: 'google',
       intent: 'youtube',
     });
-    const res = await request(app).get(
-      `/api/connections/google/callback?code=no-refresh-code&state=${encodeURIComponent(state)}`,
-    );
+    const res = await request(app)
+      .get(
+        `/api/connections/google/callback?code=no-refresh-code&state=${encodeURIComponent(state)}`,
+      )
+      .set('Cookie', nonceCookieFor(state));
 
     expect(res.status).toBe(302);
     const location = redirectLocation(res);
@@ -286,7 +320,9 @@ describe.skipIf(!dbReachable)('Google OAuth connect flow', () => {
     const [connection] = await getDb()
       .select()
       .from(platformConnections)
-      .where(and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')));
+      .where(
+        and(eq(platformConnections.userId, user.id), eq(platformConnections.platform, 'google')),
+      );
     expect(connection).toBeUndefined();
 
     await getDb().delete(users).where(eq(users.id, user.id));

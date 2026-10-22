@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../env.js';
 import { getDb, getPool, plans } from '@reelbridge/shared';
 
 async function main() {

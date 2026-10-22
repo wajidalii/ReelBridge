@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../env.js';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { getDb, getPool } from '@reelbridge/shared';
 
